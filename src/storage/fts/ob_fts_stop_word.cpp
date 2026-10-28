@@ -204,9 +204,11 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
   } else {
-    // Keep the first occurrence's count and key, and accumulate later
-    // occurrences with a single hash lookup instead of a get followed by set.
-    auto add_frequency = [word_freq](common::hash::HashMapPair<ObFTWord, int64_t> &entry) {
+    // set_refactored(overwrite=1) replaces the stored key as well as its count.
+    // Collation-equivalent tokens may have different bytes, so retain the last
+    // token's spelling while accumulating its frequency with one hash lookup.
+    auto add_frequency = [&word, word_freq](common::hash::HashMapPair<ObFTWord, int64_t> &entry) {
+      entry.first = word;
       entry.second += word_freq;
     };
     if (OB_FAIL(word_map_.set_or_update(word, 1/*word count*/, add_frequency))) {
