@@ -17,7 +17,8 @@ def main():
     parser.add_argument('--reference')
     parser.add_argument('--output', required=True)
     args = parser.parse_args()
-    report = {'revision': args.revision, 'started': time.time(), 'cases': []}
+    report = {'revision': args.revision, 'started': time.time(), 'cases': [],
+              'suite_source_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     db = pymysql.connect(host='127.0.0.1', port=args.port, user='root',
                          password=os.environ.get('SEEKDB_TEST_PASSWORD', ''),
                          charset='utf8mb4', autocommit=True, read_timeout=180)
@@ -64,13 +65,17 @@ def main():
                     capture(f'{tokenizer}/{query_index}/aggregate',
                             f'SELECT COUNT(*),SUM(id),ROUND(SUM({match}),9) FROM {table} WHERE {match}>0',
                             (query, query))
-                # A correlated subquery must reset the retrieval iterator and
-                # expression flags for different keys within the same statement.
-                capture(f'{tokenizer}/rescan',
-                        f'SELECT d.id,(SELECT COUNT(*) FROM {table} e WHERE '
-                        'MATCH(e.title,e.body) AGAINST(d.term)) '
-                        "FROM (SELECT 1 id,'database' term UNION ALL SELECT 2,'audit' "
-                        "UNION ALL SELECT 3,'missing_unique_term') d ORDER BY d.id")
+                # Re-execute one prepared plan with different search terms,
+                # including an empty result between nonempty result batches.
+                prepared_sql = (f'SELECT id,ROUND(MATCH(title,body) AGAINST(?),9) AS score '
+                                f'FROM {table} WHERE MATCH(title,body) AGAINST(?)>0 '
+                                'ORDER BY score DESC,id LIMIT 129')
+                cur.execute('PREPARE ranked_query FROM %s', (prepared_sql,))
+                for index, term in enumerate(('database', 'audit', 'missing_unique_term', 'database')):
+                    cur.execute('SET @ranked_term=%s', (term,))
+                    capture(f'{tokenizer}/prepared/{index}',
+                            'EXECUTE ranked_query USING @ranked_term,@ranked_term')
+                cur.execute('DEALLOCATE PREPARE ranked_query')
                 cur.execute(f"UPDATE {table} SET body='fresh lighthouse database' WHERE id BETWEEN 60 AND 70")
                 cur.execute(f'DELETE FROM {table} WHERE id BETWEEN 250 AND 260')
                 capture(f'{tokenizer}/after-dml',
