@@ -126,17 +126,38 @@ int ObExprBM25::eval_batch_bm25_relevance_expr(const ObExpr &expr, ObEvalCtx &ct
     const double avg_doc_token_cnt = avg_doc_token_cnt_datum.at(0)->get_double();
     ObDatum *res_datum = expr.locate_batch_datums(ctx);
     ObBitVector &eval_flags = expr.get_evaluated_flags(ctx);
-    for (int64_t i = 0; OB_SUCC(ret) && i < size; ++i) {
-      if (OB_UNLIKELY(doc_length_datum.at(i)->is_null() || related_token_cnt_datum.at(i)->is_null())) {
-        ret = OB_ERR_UNEXPECTED;
-      } else if (!skip.contain(i) && !eval_flags.at(i)) {
-        const int64_t related_token_cnt = related_token_cnt_datum.at(i)->get_uint();
-        const uint64_t doc_token_cnt = doc_length_datum.at(i)->get_uint();
+    if (doc_length_datum.is_batch() && related_token_cnt_datum.is_batch()
+        && skip.is_all_false(size) && eval_flags.is_all_false(size)) {
+      // Dense retrieval batches need every score. Keep the arithmetic identical
+      // and mark the completed prefix once, including on a NULL input error.
+      const ObDatum *doc_lengths = doc_length_datum.datums_;
+      const ObDatum *token_counts = related_token_cnt_datum.datums_;
+      int64_t evaluated = 0;
+      for (; evaluated < size; ++evaluated) {
+        if (OB_UNLIKELY(doc_lengths[evaluated].is_null() || token_counts[evaluated].is_null())) {
+          ret = OB_ERR_UNEXPECTED;
+          break;
+        }
+        const int64_t related_token_cnt = token_counts[evaluated].get_uint();
+        const uint64_t doc_token_cnt = doc_lengths[evaluated].get_uint();
         const double norm_len = doc_token_cnt / avg_doc_token_cnt;
         const double doc_weight = doc_token_weight(related_token_cnt, norm_len);
-        const double relevance = token_weight * doc_weight;
-        res_datum[i].set_double(relevance);
-        eval_flags.set(i);
+        res_datum[evaluated].set_double(token_weight * doc_weight);
+      }
+      eval_flags.set_all(evaluated);
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < size; ++i) {
+        if (OB_UNLIKELY(doc_length_datum.at(i)->is_null() || related_token_cnt_datum.at(i)->is_null())) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (!skip.contain(i) && !eval_flags.at(i)) {
+          const int64_t related_token_cnt = related_token_cnt_datum.at(i)->get_uint();
+          const uint64_t doc_token_cnt = doc_length_datum.at(i)->get_uint();
+          const double norm_len = doc_token_cnt / avg_doc_token_cnt;
+          const double doc_weight = doc_token_weight(related_token_cnt, norm_len);
+          const double relevance = token_weight * doc_weight;
+          res_datum[i].set_double(relevance);
+          eval_flags.set(i);
+        }
       }
     }
   }
