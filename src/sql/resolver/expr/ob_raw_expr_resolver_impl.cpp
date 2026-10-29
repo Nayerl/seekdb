@@ -5045,7 +5045,8 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
       } else if (T_FROM_SCOPE != ctx_.current_scope_
                  && (0 == name.case_compare("generator")
                      || 0 == name.case_compare("glob")
-                     || 0 == name.case_compare("read_csv"))) {
+                     || 0 == name.case_compare("read_csv")
+                     || 0 == name.case_compare("read_json"))) {
         ret = OB_ERR_FUNCTION_UNKNOWN;
         LOG_USER_ERROR(OB_ERR_FUNCTION_UNKNOWN, "FUNCTION", name.length(), name.ptr());
       }
@@ -5095,9 +5096,10 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
     func_expr->set_func_name(func_name);
     if (node->num_child_ > 1) {
       const bool is_read_csv = 0 == func_name.case_compare("read_csv");
+      const bool is_read_json = 0 == func_name.case_compare("read_json");
       const int32_t raw_num = OB_ISNULL(node->children_[1])
           ? 0 : node->children_[1]->num_child_;
-      const int32_t param_num = is_read_csv ? 1 : raw_num;
+      const int32_t param_num = (is_read_csv || is_read_json) ? 1 : raw_num;
       if (OB_ISNULL(node->children_) || OB_ISNULL(node->children_[1])
           || OB_UNLIKELY(T_EXPR_LIST != node->children_[1]->type_)) {
         ret = OB_ERR_PARSER_SYNTAX;
@@ -5138,6 +5140,26 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
                 if (!minus_one) { ret = OB_NOT_SUPPORTED; }
               } else {
                 ret = OB_ERR_PARSE_SQL;
+              }
+            }
+          } else if (is_read_json && i > 0) {
+            const ParseNode *option = node->children_[1]->children_[i];
+            if (T_OP_EQ != option->type_ || 2 != option->num_child_
+                || OB_ISNULL(option->children_) || OB_ISNULL(option->children_[0])
+                || OB_ISNULL(option->children_[1])
+                || T_COLUMN_REF != option->children_[0]->type_
+                || T_VARCHAR != option->children_[1]->type_
+                || OB_ISNULL(option->children_[0]->str_value_)
+                || OB_ISNULL(option->children_[1]->str_value_)) {
+              ret = OB_ERR_PARSE_SQL;
+            } else {
+              const ParseNode *key = option->children_[0];
+              const ParseNode *value = option->children_[1];
+              const ObString name(key->str_len_, key->str_value_);
+              const ObString format(value->str_len_, value->str_value_);
+              if (0 != name.case_compare("format")
+                  || 0 != format.case_compare("newline_delimited")) {
+                ret = OB_NOT_SUPPORTED;
               }
             }
           } else if (T_EXPR_WITH_ALIAS == node->children_[1]->children_[i]->type_) {

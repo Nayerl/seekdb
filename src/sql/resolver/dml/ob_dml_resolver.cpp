@@ -3950,7 +3950,8 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
   OZ (function_table_expr->deduce_type(session_info_));
   if (OB_SUCC(ret)
       && (T_FUN_SYS_GLOB == function_table_expr->get_expr_type()
-          || T_FUN_SYS_READ_CSV == function_table_expr->get_expr_type())) {
+          || T_FUN_SYS_READ_CSV == function_table_expr->get_expr_type()
+          || T_FUN_SYS_READ_JSON == function_table_expr->get_expr_type())) {
     bool file_sql_enabled = false;
     if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
     } else if (!file_sql_enabled) {
@@ -7645,10 +7646,15 @@ int ObDMLResolver::resolve_function_table_column_item_sys_func(const TableItem &
   CK (OB_LIKELY(table_item.is_function_table()));
   CK (OB_NOT_NULL(table_expr = table_item.function_table_expr_));
   OZ (table_expr->deduce_type(session_info_));
-  if (OB_SUCC(ret) && T_FUN_SYS_READ_CSV == table_expr->get_expr_type()) {
+  if (OB_SUCC(ret) && (T_FUN_SYS_READ_CSV == table_expr->get_expr_type()
+      || T_FUN_SYS_READ_JSON == table_expr->get_expr_type())) {
     std::vector<std::string> names;
     std::vector<ObObjMeta> column_types;
-    OZ (FileSqlCsvExpr::inspect_columns(*table_expr, session_info_, names, &column_types));
+    if (T_FUN_SYS_READ_CSV == table_expr->get_expr_type()) {
+      OZ (FileSqlCsvExpr::inspect_columns(*table_expr, session_info_, names, &column_types));
+    } else {
+      OZ (FileSqlJsonExpr::inspect_columns(*table_expr, session_info_, names, &column_types));
+    }
     for (size_t i = 0; OB_SUCC(ret) && i < names.size(); ++i) {
       ObString stable_name;
       if (OB_FAIL(ob_write_string(*allocator_,

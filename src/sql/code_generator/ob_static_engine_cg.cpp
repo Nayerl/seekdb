@@ -5527,7 +5527,8 @@ int ObStaticEngineCG::generate_spec(ObLogFunctionTable &op, ObFunctionTableSpec 
         OZ (mark_expr_self_produced(col_item->expr_));
         OZ (generate_rt_expr(*col_item->expr_, rt_expr));
         OZ (spec.column_exprs_.push_back(rt_expr));
-        if (OB_SUCC(ret) && T_FUN_SYS_READ_CSV == value_raw_expr->get_expr_type()) {
+        if (OB_SUCC(ret) && (T_FUN_SYS_READ_CSV == value_raw_expr->get_expr_type()
+            || T_FUN_SYS_READ_JSON == value_raw_expr->get_expr_type())) {
           if (col_item->column_id_ < OB_APP_MIN_COLUMN_ID) {
             ret = OB_ERR_UNEXPECTED;
           } else {

@@ -20,6 +20,8 @@
 #include "sql/session/ob_sql_session_info.h"
 #include "share/system_variable/ob_sys_var_class_type.h"
 #include "common/timezone/ob_time_convert.h"
+#include "common/json_type/ob_json_parse.h"
+#include "common/json_type/ob_json_tree.h"
 
 #include <glob.h>
 #include <fcntl.h>
@@ -34,6 +36,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -280,6 +283,7 @@ struct FileSqlCsvField
 {
   std::string value_;
   bool quoted_ = false;
+  ObObjType json_type_ = ObNullType;
 };
 
 struct FileSqlCsvCtx : public ObExprOperatorCtx
@@ -291,6 +295,7 @@ struct FileSqlCsvCtx : public ObExprOperatorCtx
   off_t file_size_;
   time_t modified_at_;
   std::vector<FileSqlCsvField> fields_;
+  std::vector<std::string> column_names_;
   int64_t column_count_ = 0;
 };
 
@@ -365,6 +370,13 @@ ObObjType classify_file_sql_csv_field(const FileSqlCsvField &field)
   double floating = 0;
   int32_t date = 0;
   int64_t datetime = 0;
+  if (ObVarcharType == field.json_type_) {
+    if (parse_file_sql_csv_date(field.value_, date)) { return ObDateType; }
+    if (parse_file_sql_csv_datetime(field.value_, datetime)) { return ObDateTimeType; }
+    return ObVarcharType;
+  } else if (ObNullType != field.json_type_) {
+    return field.json_type_;
+  }
   if (parse_file_sql_csv_bool(field.value_, boolean)) { return ObTinyIntType; }
   if (parse_file_sql_csv_int(field.value_, integer)) { return ObIntType; }
   if (parse_file_sql_csv_double(field.value_, floating)) { return ObDoubleType; }
@@ -525,6 +537,136 @@ int get_file_sql_csv_path(const ObRawExpr &raw_expr, std::string &path)
       path.assign(str.ptr(), str.length());
     }
   }
+  return ret;
+}
+
+using FileSqlJsonPair = std::pair<std::string, FileSqlCsvField>;
+
+int read_file_sql_json_record(FILE *file, std::vector<FileSqlJsonPair> &row)
+{
+  int ret = OB_SUCCESS;
+  std::string line;
+  row.clear();
+  while (OB_SUCC(ret)) {
+    line.clear();
+    int ch = 0;
+    while (EOF != (ch = ::fgetc(file)) && '\n' != ch) {
+      if ('\0' == ch || line.size() >= 16 * 1024 * 1024) {
+        ret = OB_SIZE_OVERFLOW;
+        break;
+      }
+      line.push_back(static_cast<char>(ch));
+    }
+    if (OB_FAIL(ret)) { break; }
+    if (::ferror(file)) { ret = OB_IO_ERROR; break; }
+    if (EOF == ch && line.empty()) { ret = OB_ITER_END; break; }
+    if (std::string::npos != line.find_first_not_of(" \t\r")) { break; }
+    if (EOF == ch) { ret = OB_ITER_END; break; }
+  }
+  if (OB_SUCC(ret)) {
+    ObArenaAllocator allocator;
+    ObJsonNode *tree = nullptr;
+    if (OB_FAIL(ObJsonParser::get_tree(&allocator, line.c_str(), line.size(), tree,
+                                     ObJsonParser::JSN_STRICT_FLAG))) {
+      ret = OB_INVALID_DATA;
+    } else if (OB_ISNULL(tree) || ObJsonNodeType::J_OBJECT != tree->json_type()) {
+      ret = OB_INVALID_DATA;
+    } else {
+      const ObJsonObject *object = static_cast<const ObJsonObject *>(tree);
+      if (object->element_count() > 256) { ret = OB_SIZE_OVERFLOW; }
+      for (uint64_t i = 0; OB_SUCC(ret) && i < object->element_count(); ++i) {
+        ObString key;
+        ObJsonNode *node = nullptr;
+        FileSqlCsvField field;
+        if (OB_FAIL(object->get_value_by_idx(i, key, node)) || OB_ISNULL(node)
+            || key.empty() || key.length() > 128) {
+          ret = OB_INVALID_DATA;
+        } else {
+          switch (node->json_type()) {
+            case ObJsonNodeType::J_NULL:
+              break;
+            case ObJsonNodeType::J_STRING: {
+              const ObString value = static_cast<ObJsonString *>(node)->value();
+              if (!value.empty()) { field.value_.assign(value.ptr(), value.length()); }
+              field.quoted_ = true;
+              field.json_type_ = ObVarcharType;
+              break;
+            }
+            case ObJsonNodeType::J_BOOLEAN:
+              field.value_ = static_cast<ObJsonBoolean *>(node)->value() ? "true" : "false";
+              field.json_type_ = ObTinyIntType;
+              break;
+            case ObJsonNodeType::J_INT:
+              field.value_ = std::to_string(static_cast<ObJsonInt *>(node)->value());
+              field.json_type_ = ObIntType;
+              break;
+            case ObJsonNodeType::J_UINT: {
+              const uint64_t value = static_cast<ObJsonUint *>(node)->value();
+              field.value_ = std::to_string(value);
+              field.json_type_ = value > static_cast<uint64_t>(
+                  std::numeric_limits<int64_t>::max()) ? ObVarcharType : ObIntType;
+              break;
+            }
+            case ObJsonNodeType::J_DOUBLE: {
+              const double value = static_cast<ObJsonDouble *>(node)->value();
+              char buf[64] = {};
+              const int written = std::snprintf(buf, sizeof(buf), "%.17g", value);
+              if (!std::isfinite(value) || written <= 0
+                  || written >= static_cast<int>(sizeof(buf))) {
+                ret = OB_INVALID_DATA;
+              } else {
+                field.value_.assign(buf, written);
+                field.json_type_ = ObDoubleType;
+              }
+              break;
+            }
+            default:
+              ret = OB_NOT_SUPPORTED;
+              break;
+          }
+          if (OB_SUCC(ret)) {
+            row.emplace_back(std::string(key.ptr(), key.length()), std::move(field));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int inspect_file_sql_json_stream(FILE *file, std::vector<std::string> &names,
+                                 std::vector<ObObjType> &types)
+{
+  int ret = OB_SUCCESS;
+  std::vector<FileSqlJsonPair> row;
+  names.clear();
+  types.clear();
+  while (OB_SUCC(ret)) {
+    if (OB_FAIL(read_file_sql_json_record(file, row))) {
+      if (OB_ITER_END == ret) { ret = OB_SUCCESS; }
+      break;
+    }
+    for (const FileSqlJsonPair &entry : row) {
+      auto it = std::find(names.begin(), names.end(), entry.first);
+      if (names.end() == it) {
+        if (names.size() >= 256) { ret = OB_SIZE_OVERFLOW; break; }
+        names.push_back(entry.first);
+        types.push_back(ObNullType);
+        it = names.end() - 1;
+      }
+      const FileSqlCsvField &field = entry.second;
+      if (field.value_.empty() && !field.quoted_) { continue; }
+      ObObjType &current = types[static_cast<size_t>(it - names.begin())];
+      const ObObjType next = classify_file_sql_csv_field(field);
+      if (ObNullType == current) { current = next; }
+      else if (current == next || ObVarcharType == current) { }
+      else if ((ObIntType == current && ObDoubleType == next)
+               || (ObDoubleType == current && ObIntType == next)) {
+        current = ObDoubleType;
+      } else { current = ObVarcharType; }
+    }
+  }
+  if (OB_SUCC(ret) && names.empty()) { ret = OB_INVALID_DATA; }
   return ret;
 }
 } // namespace
@@ -755,7 +897,154 @@ void FileSqlCsvExpr::reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr)
     csv_ctx->file_ = nullptr;
     csv_ctx->initialized_ = false;
     csv_ctx->fields_.clear();
+    csv_ctx->column_names_.clear();
   }
+}
+
+FileSqlJsonExpr::FileSqlJsonExpr(ObIAllocator &alloc)
+  : ObFuncExprOperator(alloc, T_FUN_SYS_READ_JSON, "read_json", 1,
+                       NOT_VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION)
+{}
+
+int FileSqlJsonExpr::calc_result_type1(ObExprResType &type,
+                                       ObExprResType &path,
+                                       ObExprTypeCtx &type_ctx) const
+{
+  UNUSED(type_ctx);
+  type.set_varchar();
+  type.set_length(PATH_MAX);
+  type.set_collation_level(CS_LEVEL_IMPLICIT);
+  type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+  path.set_calc_type(ObVarcharType);
+  return OB_SUCCESS;
+}
+
+int FileSqlJsonExpr::cg_expr(ObExprCGCtx &expr_cg_ctx,
+                             const ObRawExpr &raw_expr,
+                             ObExpr &rt_expr) const
+{
+  UNUSED(expr_cg_ctx);
+  int ret = OB_SUCCESS;
+  std::string path;
+  if (OB_FAIL(get_file_sql_csv_path(raw_expr, path))) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "read_json requires a constant path");
+  } else {
+    rt_expr.eval_func_ = FileSqlJsonExpr::eval_next_row;
+  }
+  return ret;
+}
+
+int FileSqlJsonExpr::inspect_columns(const ObRawExpr &raw_expr,
+                                     ObSQLSessionInfo *session,
+                                     std::vector<std::string> &column_names,
+                                     std::vector<ObObjMeta> *column_types)
+{
+  int ret = OB_SUCCESS;
+  FILE *file = nullptr;
+  std::string path;
+  std::vector<ObObjType> inferred;
+  column_names.clear();
+  if (nullptr != column_types) { column_types->clear(); }
+  if (OB_FAIL(get_file_sql_csv_path(raw_expr, path))) {
+  } else if (OB_FAIL(open_file_sql_csv(path, session, file))) {
+  } else if (OB_FAIL(inspect_file_sql_json_stream(file, column_names, inferred))) {
+  } else if (nullptr != column_types) {
+    for (const ObObjType inferred_type : inferred) {
+      ObObjMeta meta = raw_expr.get_result_meta();
+      if (ObNullType != inferred_type) { meta.set_type(inferred_type); }
+      column_types->push_back(meta);
+    }
+  }
+  if (nullptr != file) { ::fclose(file); }
+  if (OB_FAIL(ret)) {
+    LOG_WARN("read_json column inspection failed", K(ret), "path", path.c_str());
+  }
+  return ret;
+}
+
+int FileSqlJsonExpr::eval_next_row(const ObExpr &expr, ObEvalCtx &ctx,
+                                   ObDatum &res_datum)
+{
+  int ret = OB_SUCCESS;
+  FileSqlCsvCtx *json_ctx = static_cast<FileSqlCsvCtx *>(
+      ctx.exec_ctx_.get_expr_op_ctx(expr.expr_ctx_id_));
+  if (OB_ISNULL(json_ctx)
+      && OB_FAIL(ctx.exec_ctx_.create_expr_op_ctx(expr.expr_ctx_id_, json_ctx))) {
+  }
+  if (OB_SUCC(ret) && OB_ISNULL(json_ctx)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+  if (OB_SUCC(ret) && !json_ctx->initialized_) {
+    bool enabled = false;
+    ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+    ObDatum *path_datum = nullptr;
+    std::vector<ObObjType> inferred;
+    if (OB_ISNULL(session)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(session->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+    } else if (!enabled) {
+      ret = OB_NOT_SUPPORTED;
+    } else if (OB_FAIL(expr.eval_param_value(ctx, path_datum))) {
+    } else if (OB_ISNULL(path_datum) || path_datum->is_null()) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      const ObString path_value = path_datum->get_string();
+      const std::string path(path_value.ptr(), path_value.length());
+      if (OB_FAIL(open_file_sql_csv(path, session, json_ctx->file_))) {
+      } else if (OB_FAIL(inspect_file_sql_json_stream(
+                     json_ctx->file_, json_ctx->column_names_, inferred))) {
+      } else if (0 != ::fseek(json_ctx->file_, 0, SEEK_SET)) {
+        ret = OB_IO_ERROR;
+      } else {
+        json_ctx->column_count_ = json_ctx->column_names_.size();
+        struct stat st = {};
+        if (0 != ::fstat(::fileno(json_ctx->file_), &st)) {
+          ret = OB_IO_ERROR;
+        } else {
+          json_ctx->file_size_ = st.st_size;
+          json_ctx->modified_at_ = st.st_mtime;
+          json_ctx->initialized_ = true;
+        }
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    struct stat st = {};
+    std::vector<FileSqlJsonPair> row;
+    if (0 != ::fstat(::fileno(json_ctx->file_), &st)
+        || st.st_size != json_ctx->file_size_
+        || st.st_mtime != json_ctx->modified_at_) {
+      ret = OB_IO_ERROR;
+    } else if (OB_FAIL(read_file_sql_json_record(json_ctx->file_, row))) {
+    } else {
+      json_ctx->fields_.assign(json_ctx->column_count_, FileSqlCsvField());
+      for (const FileSqlJsonPair &entry : row) {
+        auto it = std::find(json_ctx->column_names_.begin(),
+                            json_ctx->column_names_.end(), entry.first);
+        if (json_ctx->column_names_.end() == it) {
+          ret = OB_INVALID_DATA;
+          break;
+        }
+        json_ctx->fields_[static_cast<size_t>(it - json_ctx->column_names_.begin())]
+            = entry.second;
+      }
+      if (OB_SUCC(ret)) { res_datum.set_string("", 0); }
+    }
+  }
+  return ret;
+}
+
+int FileSqlJsonExpr::write_current_row(ObExecContext &exec_ctx,
+                                        ObEvalCtx &eval_ctx,
+                                        const ObExpr &expr,
+                                        const ObIArray<ObExpr *> &columns,
+                                        const ObIArray<int64_t> &column_indexes)
+{
+  return FileSqlCsvExpr::write_current_row(
+      exec_ctx, eval_ctx, expr, columns, column_indexes);
+}
+
+void FileSqlJsonExpr::reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr)
+{
+  FileSqlCsvExpr::reset_runtime(exec_ctx, expr);
 }
 
 } /* namespace sql */

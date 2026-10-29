@@ -58,7 +58,8 @@ static bool has_dynamic_file_schema(const ObString &sql)
 {
   bool found = false;
   for (int64_t i = 0; !found && i + 8 <= sql.length(); ++i) {
-    found = 0 == STRNCASECMP(sql.ptr() + i, "read_csv", 8);
+    found = 0 == STRNCASECMP(sql.ptr() + i, "read_csv", 8)
+        || (i + 9 <= sql.length() && 0 == STRNCASECMP(sql.ptr() + i, "read_json", 9));
   }
   return found;
 }

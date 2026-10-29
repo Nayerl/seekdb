@@ -900,6 +900,7 @@ int ObRawExpr::is_const_inherit_expr(bool &is_const_inherit,
       || T_FUN_SYS_GENERATOR == type_
       || T_FUN_SYS_GLOB == type_
       || T_FUN_SYS_READ_CSV == type_
+      || T_FUN_SYS_READ_JSON == type_
       || T_FUN_SYS_UUID == type_
       || T_FUN_SYS_UUID_SHORT == type_
       || T_FUN_SYS_AUTOINC_NEXTVAL == type_
