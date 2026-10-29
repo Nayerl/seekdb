@@ -19,6 +19,7 @@
 #include "sql/engine/ob_exec_context.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "share/system_variable/ob_sys_var_class_type.h"
+#include "common/timezone/ob_time_convert.h"
 
 #include <glob.h>
 #include <fcntl.h>
@@ -326,14 +327,49 @@ bool parse_file_sql_csv_bool(const std::string &text, bool &value)
   return true;
 }
 
+bool parse_file_sql_csv_date(const std::string &text, int32_t &value)
+{
+  if (10 != text.size() || '-' != text[4] || '-' != text[7]) { return false; }
+  for (size_t i = 0; i < text.size(); ++i) {
+    if (4 != i && 7 != i && !std::isdigit(static_cast<unsigned char>(text[i]))) {
+      return false;
+    }
+  }
+  return OB_SUCCESS == ObTimeConverter::str_to_date(ObString::make_string(text.c_str()), value);
+}
+
+bool parse_file_sql_csv_datetime(const std::string &text, int64_t &value)
+{
+  if (19 != text.size() || '-' != text[4] || '-' != text[7]
+      || (' ' != text[10] && 'T' != text[10])
+      || ':' != text[13] || ':' != text[16]) {
+    return false;
+  }
+  for (size_t i = 0; i < text.size(); ++i) {
+    if (4 != i && 7 != i && 10 != i && 13 != i && 16 != i
+        && !std::isdigit(static_cast<unsigned char>(text[i]))) {
+      return false;
+    }
+  }
+  std::string canonical = text;
+  canonical[10] = ' ';
+  const ObTimeConvertCtx cvrt_ctx(nullptr, false);
+  return OB_SUCCESS == ObTimeConverter::str_to_datetime(
+      ObString::make_string(canonical.c_str()), cvrt_ctx, value);
+}
+
 ObObjType classify_file_sql_csv_field(const FileSqlCsvField &field)
 {
   bool boolean = false;
   int64_t integer = 0;
   double floating = 0;
+  int32_t date = 0;
+  int64_t datetime = 0;
   if (parse_file_sql_csv_bool(field.value_, boolean)) { return ObTinyIntType; }
   if (parse_file_sql_csv_int(field.value_, integer)) { return ObIntType; }
   if (parse_file_sql_csv_double(field.value_, floating)) { return ObDoubleType; }
+  if (parse_file_sql_csv_date(field.value_, date)) { return ObDateType; }
+  if (parse_file_sql_csv_datetime(field.value_, datetime)) { return ObDateTimeType; }
   return ObVarcharType;
 }
 
@@ -684,6 +720,14 @@ int FileSqlCsvExpr::write_current_row(ObExecContext &exec_ctx,
           double value = 0;
           if (!parse_file_sql_csv_double(field.value_, value)) { ret = OB_INVALID_DATA; }
           else { datum.set_double(value); }
+        } else if (ObDateType == column->datum_meta_.get_type()) {
+          int32_t value = 0;
+          if (!parse_file_sql_csv_date(field.value_, value)) { ret = OB_INVALID_DATA; }
+          else { datum.set_date(value); }
+        } else if (ObDateTimeType == column->datum_meta_.get_type()) {
+          int64_t value = 0;
+          if (!parse_file_sql_csv_datetime(field.value_, value)) { ret = OB_INVALID_DATA; }
+          else { datum.set_datetime(value); }
         } else if (field.value_.empty()) {
           datum.set_string("", 0);
         } else {
