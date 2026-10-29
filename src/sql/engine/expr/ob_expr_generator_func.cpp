@@ -27,6 +27,9 @@
 #include <unistd.h>
 #include <cstdlib>
 #include <algorithm>
+#include <cerrno>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -290,6 +293,50 @@ struct FileSqlCsvCtx : public ObExprOperatorCtx
   int64_t column_count_ = 0;
 };
 
+bool parse_file_sql_csv_int(const std::string &text, int64_t &value)
+{
+  if (text.empty() || std::isspace(static_cast<unsigned char>(text[0]))) { return false; }
+  char *end = nullptr;
+  errno = 0;
+  const long long parsed = std::strtoll(text.c_str(), &end, 10);
+  if (ERANGE == errno || end != text.c_str() + text.size()) { return false; }
+  value = static_cast<int64_t>(parsed);
+  return true;
+}
+
+bool parse_file_sql_csv_double(const std::string &text, double &value)
+{
+  if (text.empty() || std::isspace(static_cast<unsigned char>(text[0]))) { return false; }
+  char *end = nullptr;
+  errno = 0;
+  const double parsed = std::strtod(text.c_str(), &end);
+  if (ERANGE == errno || end != text.c_str() + text.size() || !std::isfinite(parsed)) {
+    return false;
+  }
+  value = parsed;
+  return true;
+}
+
+bool parse_file_sql_csv_bool(const std::string &text, bool &value)
+{
+  const ObString str = ObString::make_string(text.c_str());
+  if (0 == str.case_compare("true")) { value = true; }
+  else if (0 == str.case_compare("false")) { value = false; }
+  else { return false; }
+  return true;
+}
+
+ObObjType classify_file_sql_csv_field(const FileSqlCsvField &field)
+{
+  bool boolean = false;
+  int64_t integer = 0;
+  double floating = 0;
+  if (parse_file_sql_csv_bool(field.value_, boolean)) { return ObTinyIntType; }
+  if (parse_file_sql_csv_int(field.value_, integer)) { return ObIntType; }
+  if (parse_file_sql_csv_double(field.value_, floating)) { return ObDoubleType; }
+  return ObVarcharType;
+}
+
 int read_file_sql_csv_record(FILE *file, std::vector<FileSqlCsvField> &fields)
 {
   int ret = OB_SUCCESS;
@@ -481,13 +528,15 @@ int FileSqlCsvExpr::cg_expr(ObExprCGCtx &expr_cg_ctx,
 
 int FileSqlCsvExpr::inspect_columns(const ObRawExpr &raw_expr,
                                     ObSQLSessionInfo *session,
-                                    std::vector<std::string> &column_names)
+                                    std::vector<std::string> &column_names,
+                                    std::vector<ObObjMeta> *column_types)
 {
   int ret = OB_SUCCESS;
   FILE *file = nullptr;
   std::string path;
   std::vector<FileSqlCsvField> header;
   column_names.clear();
+  if (nullptr != column_types) { column_types->clear(); }
   if (OB_FAIL(get_file_sql_csv_path(raw_expr, path))) {
   } else if (OB_FAIL(open_file_sql_csv(path, session, file))) {
   } else if (OB_FAIL(read_file_sql_csv_record(file, header))) {
@@ -503,6 +552,35 @@ int FileSqlCsvExpr::inspect_columns(const ObRawExpr &raw_expr,
       }
       if (name.length() > 128) { ret = OB_SIZE_OVERFLOW; }
       else { column_names.push_back(std::move(name)); }
+    }
+    if (OB_SUCC(ret) && nullptr != column_types) {
+      std::vector<ObObjType> inferred(header.size(), ObNullType);
+      std::vector<FileSqlCsvField> fields;
+      while (OB_SUCC(ret)) {
+        if (OB_FAIL(read_file_sql_csv_record(file, fields))) {
+          if (OB_ITER_END == ret) { ret = OB_SUCCESS; }
+          break;
+        } else if (fields.size() != header.size()) {
+          ret = OB_INVALID_DATA;
+        } else {
+          for (size_t i = 0; i < fields.size(); ++i) {
+            if (fields[i].value_.empty() && !fields[i].quoted_) { continue; }
+            const ObObjType next = classify_file_sql_csv_field(fields[i]);
+            ObObjType &current = inferred[i];
+            if (ObNullType == current) { current = next; }
+            else if (current == next || ObVarcharType == current) { }
+            else if ((ObIntType == current && ObDoubleType == next)
+                     || (ObDoubleType == current && ObIntType == next)) {
+              current = ObDoubleType;
+            } else { current = ObVarcharType; }
+          }
+        }
+      }
+      for (size_t i = 0; OB_SUCC(ret) && i < inferred.size(); ++i) {
+        ObObjMeta meta = raw_expr.get_result_meta();
+        if (ObNullType != inferred[i]) { meta.set_type(inferred[i]); }
+        column_types->push_back(meta);
+      }
     }
   }
   if (nullptr != file) { ::fclose(file); }
@@ -594,6 +672,18 @@ int FileSqlCsvExpr::write_current_row(ObExecContext &exec_ctx,
         ObDatum &datum = column->locate_datum_for_write(eval_ctx);
         if (field.value_.empty() && !field.quoted_) {
           datum.set_null();
+        } else if (ObTinyIntType == column->datum_meta_.get_type()) {
+          bool value = false;
+          if (!parse_file_sql_csv_bool(field.value_, value)) { ret = OB_INVALID_DATA; }
+          else { datum.set_bool(value); }
+        } else if (ObIntType == column->datum_meta_.get_type()) {
+          int64_t value = 0;
+          if (!parse_file_sql_csv_int(field.value_, value)) { ret = OB_INVALID_DATA; }
+          else { datum.set_int(value); }
+        } else if (ObDoubleType == column->datum_meta_.get_type()) {
+          double value = 0;
+          if (!parse_file_sql_csv_double(field.value_, value)) { ret = OB_INVALID_DATA; }
+          else { datum.set_double(value); }
         } else if (field.value_.empty()) {
           datum.set_string("", 0);
         } else {

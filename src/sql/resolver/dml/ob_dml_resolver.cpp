@@ -7647,7 +7647,8 @@ int ObDMLResolver::resolve_function_table_column_item_sys_func(const TableItem &
   OZ (table_expr->deduce_type(session_info_));
   if (OB_SUCC(ret) && T_FUN_SYS_READ_CSV == table_expr->get_expr_type()) {
     std::vector<std::string> names;
-    OZ (FileSqlCsvExpr::inspect_columns(*table_expr, session_info_, names));
+    std::vector<ObObjMeta> column_types;
+    OZ (FileSqlCsvExpr::inspect_columns(*table_expr, session_info_, names, &column_types));
     for (size_t i = 0; OB_SUCC(ret) && i < names.size(); ++i) {
       ObString stable_name;
       if (OB_FAIL(ob_write_string(*allocator_,
@@ -7655,7 +7656,7 @@ int ObDMLResolver::resolve_function_table_column_item_sys_func(const TableItem &
       } else if (NULL != (col_item = stmt->get_column_item(table_item.table_id_, stable_name))) {
       } else {
         OZ (resolve_function_table_column_item(table_item,
-                                               table_expr->get_result_meta(),
+                                               column_types[i],
                                                table_expr->get_accuracy(),
                                                stable_name,
                                                OB_APP_MIN_COLUMN_ID + i,

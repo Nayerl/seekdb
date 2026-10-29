@@ -86,7 +86,8 @@ public:
                       ObExpr &rt_expr) const override;
   static int inspect_columns(const ObRawExpr &raw_expr,
                              ObSQLSessionInfo *session,
-                             std::vector<std::string> &column_names);
+                             std::vector<std::string> &column_names,
+                             std::vector<common::ObObjMeta> *column_types = nullptr);
   static int eval_next_row(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
   static int write_current_row(ObExecContext &exec_ctx,
                                ObEvalCtx &eval_ctx,
