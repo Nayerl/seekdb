@@ -18,6 +18,8 @@
 #include "config_bridge.h"
 #include "sql/ob_sql.h"
 #include "sql/ob_file_sql_copy_compat.h"
+#include "sql/ob_file_sql_describe_compat.h"
+#include "sql/engine/expr/ob_expr_generator_func.h"
 #include "lib/json/ob_json_print_utils.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "query/runtime/ob_query_runtime_environment.h"
@@ -65,6 +67,18 @@ static bool has_dynamic_file_schema(const ObString &sql)
         || (i + 12 <= sql.length() && 0 == STRNCASECMP(sql.ptr() + i, "read_parquet", 12));
   }
   return found;
+}
+
+static const char *file_sql_csv_type_name(ObObjType type)
+{
+  switch (type) {
+    case ObIntType: return "BIGINT";
+    case ObTinyIntType: return "BOOLEAN";
+    case ObDoubleType: return "DOUBLE";
+    case ObDateType: return "DATE";
+    case ObDateTimeType: return "DATETIME";
+    default: return "VARCHAR";
+  }
 }
 
 const int64_t ObSql::max_error_length = 80;
@@ -191,6 +205,7 @@ int ObSql::stmt_query(const common::ObString &stmt, ObSqlCtx &context, ObResultS
 {
   int ret = OB_SUCCESS;
   std::string rewritten_file_sql_copy;
+  std::string described_path;
   ObString executable_stmt = stmt;
   LinkExecCtxGuard link_guard(result.get_session(), result.get_exec_context());
   ObTraceSpanGuard compile_span(&result.get_session(), TRACE_SQL_COMPILE);
@@ -216,6 +231,33 @@ int ObSql::stmt_query(const common::ObString &stmt, ObSqlCtx &context, ObResultS
       executable_stmt.assign_ptr(rewritten_file_sql_copy.data(),
                                  static_cast<int32_t>(rewritten_file_sql_copy.size()));
     }
+  } else if (file_sql_describe::parse_path(
+                 std::string(stmt.ptr(), stmt.length()), described_path)) {
+    bool enabled = false;
+    std::vector<FileSqlCsvSchemaColumn> csv_columns;
+    if (OB_FAIL(result.get_session().get_sys_variable(
+            share::SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+    } else if (!enabled) {
+      ret = OB_NOT_SUPPORTED;
+    } else if (OB_FAIL(FileSqlCsvExpr::describe_path(
+                   described_path, &result.get_session(), csv_columns))) {
+    } else {
+      std::vector<file_sql_describe::Column> columns;
+      for (const FileSqlCsvSchemaColumn &source : csv_columns) {
+        file_sql_describe::Column column;
+        column.name = source.name_;
+        column.type = file_sql_csv_type_name(source.type_);
+        column.nullable = source.nullable_;
+        columns.push_back(std::move(column));
+      }
+      if (!file_sql_describe::render(columns, rewritten_file_sql_copy)) {
+        ret = OB_INVALID_DATA;
+      } else {
+        executable_stmt.assign_ptr(rewritten_file_sql_copy.data(),
+                                   static_cast<int32_t>(rewritten_file_sql_copy.size()));
+      }
+    }
+    if (OB_FAIL(ret)) { result.get_exec_context().set_need_disconnect(false); }
   }
   if (OB_SUCC(ret) && OB_FAIL(handle_text_query(executable_stmt, context, result))) {
     if (OB_EAGAIN != ret) {

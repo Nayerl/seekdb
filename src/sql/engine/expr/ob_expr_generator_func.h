@@ -71,6 +71,13 @@ private:
 
 class ObSQLSessionInfo;
 
+struct FileSqlCsvSchemaColumn
+{
+  std::string name_;
+  common::ObObjType type_ = common::ObNullType;
+  bool nullable_ = false;
+};
+
 // A row-at-a-time CSV source. The resolver exposes its header as SQL columns.
 class FileSqlCsvExpr : public ObFuncExprOperator
 {
@@ -88,6 +95,8 @@ public:
                              ObSQLSessionInfo *session,
                              std::vector<std::string> &column_names,
                              std::vector<common::ObObjMeta> *column_types = nullptr);
+  static int describe_path(const std::string &path, ObSQLSessionInfo *session,
+                           std::vector<FileSqlCsvSchemaColumn> &columns);
   static int eval_next_row(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
   static int write_current_row(ObExecContext &exec_ctx,
                                ObEvalCtx &eval_ctx,

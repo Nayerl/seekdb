@@ -713,61 +713,88 @@ int FileSqlCsvExpr::inspect_columns(const ObRawExpr &raw_expr,
                                     std::vector<ObObjMeta> *column_types)
 {
   int ret = OB_SUCCESS;
-  FILE *file = nullptr;
   std::string path;
-  std::vector<FileSqlCsvField> header;
+  std::vector<FileSqlCsvSchemaColumn> described;
   column_names.clear();
   if (nullptr != column_types) { column_types->clear(); }
   if (OB_FAIL(get_file_sql_csv_path(raw_expr, path))) {
-  } else if (OB_FAIL(open_file_sql_csv(path, session, file))) {
-  } else if (OB_FAIL(read_file_sql_csv_record(file, header))) {
-    if (OB_ITER_END == ret) { ret = OB_INVALID_DATA; }
+  } else if (OB_FAIL(describe_path(path, session, described))) {
   } else {
-    for (size_t i = 0; OB_SUCC(ret) && i < header.size(); ++i) {
-      std::string name = header[i].value_.empty()
-          ? "column" + std::to_string(i + 1) : header[i].value_;
-      const std::string base = name;
-      for (size_t suffix = 2; std::find(column_names.begin(), column_names.end(), name)
-                              != column_names.end(); ++suffix) {
-        name = base + "__" + std::to_string(suffix);
-      }
-      if (name.length() > 128) { ret = OB_SIZE_OVERFLOW; }
-      else { column_names.push_back(std::move(name)); }
-    }
-    if (OB_SUCC(ret) && nullptr != column_types) {
-      std::vector<ObObjType> inferred(header.size(), ObNullType);
-      std::vector<FileSqlCsvField> fields;
-      while (OB_SUCC(ret)) {
-        if (OB_FAIL(read_file_sql_csv_record(file, fields))) {
-          if (OB_ITER_END == ret) { ret = OB_SUCCESS; }
-          break;
-        } else if (fields.size() != header.size()) {
-          ret = OB_INVALID_DATA;
-        } else {
-          for (size_t i = 0; i < fields.size(); ++i) {
-            if (fields[i].value_.empty() && !fields[i].quoted_) { continue; }
-            const ObObjType next = classify_file_sql_csv_field(fields[i]);
-            ObObjType &current = inferred[i];
-            if (ObNullType == current) { current = next; }
-            else if (current == next || ObVarcharType == current) { }
-            else if ((ObIntType == current && ObDoubleType == next)
-                     || (ObDoubleType == current && ObIntType == next)) {
-              current = ObDoubleType;
-            } else { current = ObVarcharType; }
-          }
-        }
-      }
-      for (size_t i = 0; OB_SUCC(ret) && i < inferred.size(); ++i) {
+    for (const FileSqlCsvSchemaColumn &column : described) {
+      column_names.push_back(column.name_);
+      if (nullptr != column_types) {
         ObObjMeta meta = raw_expr.get_result_meta();
-        if (ObNullType != inferred[i]) { meta.set_type(inferred[i]); }
+        if (ObNullType != column.type_) { meta.set_type(column.type_); }
         column_types->push_back(meta);
       }
     }
   }
-  if (nullptr != file) { ::fclose(file); }
   if (OB_FAIL(ret)) {
     LOG_WARN("read_csv column inspection failed", K(ret), "path", path.c_str());
   }
+  return ret;
+}
+
+int FileSqlCsvExpr::describe_path(const std::string &path,
+                                  ObSQLSessionInfo *session,
+                                  std::vector<FileSqlCsvSchemaColumn> &columns)
+{
+  int ret = OB_SUCCESS;
+  FILE *file = nullptr;
+  std::vector<FileSqlCsvField> header;
+  columns.clear();
+  if (OB_FAIL(open_file_sql_csv(path, session, file))) {
+  } else if (OB_FAIL(read_file_sql_csv_record(file, header))) {
+    if (OB_ITER_END == ret) { ret = OB_INVALID_DATA; }
+  } else {
+    for (size_t i = 0; OB_SUCC(ret) && i < header.size(); ++i) {
+      FileSqlCsvSchemaColumn column;
+      column.name_ = header[i].value_.empty()
+          ? "column" + std::to_string(i + 1) : header[i].value_;
+      const std::string base = column.name_;
+      bool duplicate = true;
+      for (size_t suffix = 2; duplicate; ++suffix) {
+        duplicate = false;
+        for (const FileSqlCsvSchemaColumn &prior : columns) {
+          duplicate |= prior.name_ == column.name_;
+        }
+        if (duplicate) { column.name_ = base + "__" + std::to_string(suffix); }
+      }
+      if (column.name_.length() > 128) { ret = OB_SIZE_OVERFLOW; }
+      else { columns.push_back(std::move(column)); }
+    }
+    std::vector<FileSqlCsvField> fields;
+    bool saw_row = false;
+    while (OB_SUCC(ret)) {
+      if (OB_FAIL(read_file_sql_csv_record(file, fields))) {
+        if (OB_ITER_END == ret) { ret = OB_SUCCESS; }
+        break;
+      } else if (fields.size() != columns.size()) {
+        ret = OB_INVALID_DATA;
+      } else {
+        saw_row = true;
+        for (size_t i = 0; i < fields.size(); ++i) {
+          FileSqlCsvSchemaColumn &column = columns[i];
+          if (fields[i].value_.empty() && !fields[i].quoted_) {
+            column.nullable_ = true;
+            continue;
+          }
+          const ObObjType next = classify_file_sql_csv_field(fields[i]);
+          ObObjType &current = column.type_;
+          if (ObNullType == current) { current = next; }
+          else if (current == next || ObVarcharType == current) { }
+          else if ((ObIntType == current && ObDoubleType == next)
+                   || (ObDoubleType == current && ObIntType == next)) {
+            current = ObDoubleType;
+          } else { current = ObVarcharType; }
+        }
+      }
+    }
+    if (!saw_row) {
+      for (FileSqlCsvSchemaColumn &column : columns) { column.nullable_ = true; }
+    }
+  }
+  if (nullptr != file) { ::fclose(file); }
   return ret;
 }
 
