@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef OCEANBASE_SHARE_AI_COLUMN_OB_AI_COLUMN_META_H_
-#define OCEANBASE_SHARE_AI_COLUMN_OB_AI_COLUMN_META_H_
+#pragma once
 
 #include "lib/string/ob_string.h"
 #include "lib/allocator/ob_allocator.h"
@@ -104,4 +103,3 @@ private:
 } // namespace share
 } // namespace oceanbase
 
-#endif // OCEANBASE_SHARE_AI_COLUMN_OB_AI_COLUMN_META_H_

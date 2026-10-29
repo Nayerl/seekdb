@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef OCEANBASE_OBSERVER_OB_AI_COLUMN_WORKER_H_
-#define OCEANBASE_OBSERVER_OB_AI_COLUMN_WORKER_H_
+#pragma once
 
 #include "lib/thread/threads.h"
 #include "lib/container/ob_se_array.h"
@@ -69,4 +68,3 @@ private:
 } // namespace observer
 } // namespace oceanbase
 
-#endif // OCEANBASE_OBSERVER_OB_AI_COLUMN_WORKER_H_
