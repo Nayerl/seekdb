@@ -1146,7 +1146,10 @@ int ObExprOperatorFactory::alloc(common::ObIAllocator &alloc, ObExprOperator *&e
 void ObExprOperatorFactory::get_function_alias_name(const ObString &origin_name, ObString &alias_name) {
   {
     //for synonyms in mysql mode
-    if (0 == origin_name.case_compare("bin")) {
+    if (0 == origin_name.case_compare("read_ndjson")) {
+      // Newline-delimited JSON shares the same typed file-table executor.
+      alias_name = ObString::make_string("read_json");
+    } else if (0 == origin_name.case_compare("bin")) {
       // bin(N) is equivalent to CONV(N,10,2)
       alias_name = ObString::make_string(N_CONV);
     } else if (0 == origin_name.case_compare("oct")) {

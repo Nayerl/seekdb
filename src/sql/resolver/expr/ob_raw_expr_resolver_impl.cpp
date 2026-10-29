@@ -5046,7 +5046,8 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
                  && (0 == name.case_compare("generator")
                      || 0 == name.case_compare("glob")
                      || 0 == name.case_compare("read_csv")
-                     || 0 == name.case_compare("read_json"))) {
+                     || 0 == name.case_compare("read_json")
+                     || 0 == name.case_compare("read_ndjson"))) {
         ret = OB_ERR_FUNCTION_UNKNOWN;
         LOG_USER_ERROR(OB_ERR_FUNCTION_UNKNOWN, "FUNCTION", name.length(), name.ptr());
       }
@@ -5096,7 +5097,8 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
     func_expr->set_func_name(func_name);
     if (node->num_child_ > 1) {
       const bool is_read_csv = 0 == func_name.case_compare("read_csv");
-      const bool is_read_json = 0 == func_name.case_compare("read_json");
+      const bool is_read_json = 0 == func_name.case_compare("read_json")
+          || 0 == func_name.case_compare("read_ndjson");
       const int32_t raw_num = OB_ISNULL(node->children_[1])
           ? 0 : node->children_[1]->num_child_;
       const int32_t param_num = (is_read_csv || is_read_json) ? 1 : raw_num;
