@@ -28,7 +28,8 @@ using namespace common;
 namespace sql
 {
 
-OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_, has_correlated_expr_);
+OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_,
+                    column_indexes_, has_correlated_expr_);
 
 int ObFunctionTableOp::inner_open()
 {
@@ -53,6 +54,9 @@ int ObFunctionTableOp::inner_rescan()
     node_idx_ = 0;
     if (OB_NOT_NULL(MY_SPEC.value_expr_) && T_FUN_SYS_GLOB == MY_SPEC.value_expr_->type_) {
       FileSqlGlobExpr::reset_runtime(ctx_, *MY_SPEC.value_expr_);
+    } else if (OB_NOT_NULL(MY_SPEC.value_expr_)
+               && T_FUN_SYS_READ_CSV == MY_SPEC.value_expr_->type_) {
+      FileSqlCsvExpr::reset_runtime(ctx_, *MY_SPEC.value_expr_);
     }
     if (MY_SPEC.has_correlated_expr_) {
       row_count_ = 0;
@@ -213,6 +217,10 @@ int ObFunctionTableOp::inner_get_next_row_sys_func()
   } else if (OB_FAIL(MY_SPEC.value_expr_->eval(eval_ctx_, value))) {
     if (OB_ITER_END != ret) {
     }
+  } else if (T_FUN_SYS_READ_CSV == MY_SPEC.value_expr_->type_) {
+    ret = FileSqlCsvExpr::write_current_row(ctx_, eval_ctx_,
+                                             *MY_SPEC.value_expr_, MY_SPEC.column_exprs_,
+                                             MY_SPEC.column_indexes_);
   } else {
     MY_SPEC.column_exprs_.at(0)->locate_datum_for_write(eval_ctx_).set_datum(*value);
     MY_SPEC.column_exprs_.at(0)->set_evaluated_projected(eval_ctx_);

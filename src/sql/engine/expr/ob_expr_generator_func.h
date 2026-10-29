@@ -18,6 +18,8 @@
 #define OCEANBASE_SQL_OB_EXPR_FUNC_GENERATOR_FUNC_H_
 
 #include "sql/engine/expr/ob_expr_operator.h"
+#include <string>
+#include <vector>
 
 namespace oceanbase
 {
@@ -65,6 +67,35 @@ public:
   static void reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr);
 private:
   DISALLOW_COPY_AND_ASSIGN(FileSqlGlobExpr);
+};
+
+class ObSQLSessionInfo;
+
+// A row-at-a-time CSV source. The resolver exposes its header as SQL columns.
+class FileSqlCsvExpr : public ObFuncExprOperator
+{
+public:
+  explicit FileSqlCsvExpr(common::ObIAllocator &alloc);
+  virtual ~FileSqlCsvExpr() = default;
+  virtual int calc_result_type1(ObExprResType &type,
+                                ObExprResType &path,
+                                common::ObExprTypeCtx &type_ctx) const override;
+  virtual bool need_rt_ctx() const override { return true; }
+  virtual int cg_expr(ObExprCGCtx &expr_cg_ctx,
+                      const ObRawExpr &raw_expr,
+                      ObExpr &rt_expr) const override;
+  static int inspect_columns(const ObRawExpr &raw_expr,
+                             ObSQLSessionInfo *session,
+                             std::vector<std::string> &column_names);
+  static int eval_next_row(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
+  static int write_current_row(ObExecContext &exec_ctx,
+                               ObEvalCtx &eval_ctx,
+                               const ObExpr &expr,
+                               const common::ObIArray<ObExpr *> &columns,
+                               const common::ObIArray<int64_t> &column_indexes);
+  static void reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr);
+private:
+  DISALLOW_COPY_AND_ASSIGN(FileSqlCsvExpr);
 };
 
 } /* namespace sql */

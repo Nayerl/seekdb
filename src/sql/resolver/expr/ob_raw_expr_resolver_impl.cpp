@@ -5043,7 +5043,9 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
         ret = OB_ERR_FUNCTION_UNKNOWN;
         LOG_USER_ERROR(OB_ERR_FUNCTION_UNKNOWN, "FUNCTION", name.length(), name.ptr());
       } else if (T_FROM_SCOPE != ctx_.current_scope_
-                 && (0 == name.case_compare("generator") || 0 == name.case_compare("glob"))) {
+                 && (0 == name.case_compare("generator")
+                     || 0 == name.case_compare("glob")
+                     || 0 == name.case_compare("read_csv"))) {
         ret = OB_ERR_FUNCTION_UNKNOWN;
         LOG_USER_ERROR(OB_ERR_FUNCTION_UNKNOWN, "FUNCTION", name.length(), name.ptr());
       }

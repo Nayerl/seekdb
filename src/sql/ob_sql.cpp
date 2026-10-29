@@ -51,6 +51,18 @@ using namespace pl;
 namespace sql
 {
 
+// File table columns depend on the current file header, even when SQL text
+// differs only in a parameterized path. A cached plan can map columns from
+// another file, so these statements must be resolved for each execution.
+static bool has_dynamic_file_schema(const ObString &sql)
+{
+  bool found = false;
+  for (int64_t i = 0; !found && i + 8 <= sql.length(); ++i) {
+    found = 0 == STRNCASECMP(sql.ptr() + i, "read_csv", 8);
+  }
+  return found;
+}
+
 const int64_t ObSql::max_error_length = 80;
 const int64_t ObSql::SQL_MEM_SIZE_LIMIT = 1024 * 1024 * 64;
 
@@ -1196,7 +1208,8 @@ int ObSql::handle_sql_execute(const ObString &sql,
   } else if ((mode == PC_PS_MODE || mode == PC_PL_MODE) && OB_ISNULL(pctx)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    use_plan_cache = session->get_local_ob_enable_plan_cache();
+    use_plan_cache = session->get_local_ob_enable_plan_cache()
+                     && !has_dynamic_file_schema(sql);
   }
 
   ObPlanCacheCtx pc_ctx(sql, mode, allocator, context, ectx);
@@ -1832,6 +1845,7 @@ int ObSql::handle_ps_execute(const ObPsStmtId client_stmt_id,
     } else if (OB_FAIL(construct_param_store(ps_params, pctx->get_param_store_for_update()))) {
     } else {
       const ObString &sql = !ps_info->get_no_param_sql().empty() ? ps_info->get_no_param_sql() : ps_info->get_ps_sql();
+      use_plan_cache = use_plan_cache && !has_dynamic_file_schema(sql);
       context.cur_sql_ = sql;
       context.raw_sql_ = ps_info->get_ps_sql();
 #ifndef NDEBUG
@@ -1947,7 +1961,8 @@ OB_INLINE int ObSql::handle_text_query(const ObString &stmt, ObSqlCtx &context, 
   
   ObExecContext& ectx = result.get_exec_context();
   int get_plan_err = OB_SUCCESS; //used for judge whether add plan to plan cache
-  bool use_plan_cache = session.get_local_ob_enable_plan_cache();
+  bool use_plan_cache = session.get_local_ob_enable_plan_cache()
+                        && !has_dynamic_file_schema(trimed_stmt);
   ObPlanCacheCtx *pc_ctx = NULL;
   bool is_begin_commit_stmt = false;
 
@@ -3554,7 +3569,8 @@ OB_NOINLINE int ObSql::handle_physical_plan(const ObString &trimed_stmt,
   bool add_plan_to_pc = false;
   ObSQLSessionInfo &session = result.get_session();
   ObPlanCache *plan_cache = plan_cache_;
-  bool use_plan_cache = session.get_local_ob_enable_plan_cache();
+  bool use_plan_cache = session.get_local_ob_enable_plan_cache()
+                        && !has_dynamic_file_schema(trimed_stmt);
   // record whether needs to do parameterization at this time,
   // if exact mode is on, not do parameterizaiton
   bool is_enable_transform_tree = !session.get_enable_exact_mode();

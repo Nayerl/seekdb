@@ -21,11 +21,18 @@
 #include "share/system_variable/ob_sys_var_class_type.h"
 
 #include <glob.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <cstdlib>
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace oceanbase
 {
@@ -260,6 +267,360 @@ void FileSqlGlobExpr::reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr)
       exec_ctx.get_expr_op_ctx(expr.expr_ctx_id_));
   if (nullptr != glob_ctx) {
     glob_ctx->next_ = 0;
+  }
+}
+
+namespace
+{
+struct FileSqlCsvField
+{
+  std::string value_;
+  bool quoted_ = false;
+};
+
+struct FileSqlCsvCtx : public ObExprOperatorCtx
+{
+  FileSqlCsvCtx() : file_(nullptr), initialized_(false), file_size_(0), modified_at_(0) {}
+  ~FileSqlCsvCtx() override { if (nullptr != file_) { ::fclose(file_); } }
+  FILE *file_;
+  bool initialized_;
+  off_t file_size_;
+  time_t modified_at_;
+  std::vector<FileSqlCsvField> fields_;
+  int64_t column_count_ = 0;
+};
+
+int read_file_sql_csv_record(FILE *file, std::vector<FileSqlCsvField> &fields)
+{
+  int ret = OB_SUCCESS;
+  fields.clear();
+  FileSqlCsvField field;
+  bool in_quotes = false;
+  bool closed_quote = false;
+  bool saw_input = false;
+  bool ended_record = false;
+  size_t record_bytes = 0;
+  int ch = 0;
+  auto finish_field = [&]() -> int {
+    if (fields.size() >= 256) {
+      return OB_SIZE_OVERFLOW;
+    }
+    fields.push_back(std::move(field));
+    field = FileSqlCsvField();
+    closed_quote = false;
+    return OB_SUCCESS;
+  };
+  while (OB_SUCC(ret) && EOF != (ch = ::fgetc(file))) {
+    saw_input = true;
+    if (++record_bytes > 16 * 1024 * 1024 || '\0' == ch) {
+      ret = OB_SIZE_OVERFLOW;
+    } else if (in_quotes) {
+      if ('"' == ch) {
+        int next = ::fgetc(file);
+        if ('"' == next) {
+          field.value_.push_back('"');
+          ++record_bytes;
+        } else {
+          in_quotes = false;
+          closed_quote = true;
+          if (EOF != next) { ::ungetc(next, file); }
+        }
+      } else {
+        field.value_.push_back(static_cast<char>(ch));
+      }
+    } else if (',' == ch) {
+      ret = finish_field();
+    } else if ('\n' == ch || '\r' == ch) {
+      if ('\r' == ch) {
+        int next = ::fgetc(file);
+        if ('\n' != next && EOF != next) { ::ungetc(next, file); }
+      }
+      ret = finish_field();
+      ended_record = true;
+      break;
+    } else if ('"' == ch && field.value_.empty() && !closed_quote) {
+      in_quotes = true;
+      field.quoted_ = true;
+    } else if ('"' == ch || closed_quote) {
+      ret = OB_INVALID_DATA;
+    } else {
+      field.value_.push_back(static_cast<char>(ch));
+    }
+  }
+  if (OB_SUCC(ret) && ::ferror(file)) {
+    ret = OB_IO_ERROR;
+  } else if (OB_SUCC(ret) && in_quotes) {
+    ret = OB_INVALID_DATA;
+  } else if (OB_SUCC(ret) && fields.empty() && !saw_input) {
+    ret = OB_ITER_END;
+  } else if (OB_SUCC(ret) && !ended_record) {
+    ret = finish_field();
+  }
+  return ret;
+}
+
+int open_file_sql_csv(const std::string &path, ObSQLSessionInfo *session, FILE *&file)
+{
+  int ret = OB_SUCCESS;
+  ObString secure_file_priv;
+  char secure_root[PATH_MAX] = {};
+  char canonical_path[PATH_MAX] = {};
+  file = nullptr;
+  if (OB_ISNULL(session) || path.empty() || path.size() >= PATH_MAX || '/' != path[0]) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("read_csv invalid file path arguments", "path", path.c_str(), KP(session));
+  } else if (OB_FAIL(session->get_secure_file_priv(secure_file_priv))) {
+  } else if (secure_file_priv.empty()
+             || 0 == secure_file_priv.case_compare("NULL")) {
+    ret = OB_ERR_NO_PRIVILEGE;
+  } else {
+    const std::string root(secure_file_priv.ptr(), secure_file_priv.length());
+    if (OB_ISNULL(::realpath(root.c_str(), secure_root))
+        || OB_ISNULL(::realpath(path.c_str(), canonical_path))
+        || !is_within_secure_root(canonical_path, secure_root)) {
+      ret = OB_ERR_NO_PRIVILEGE;
+    } else {
+      const std::string relative = (0 == std::strcmp(secure_root, "/"))
+          ? std::string(canonical_path + 1)
+          : std::string(canonical_path + std::strlen(secure_root) + 1);
+      int fd = ::open(secure_root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+      if (relative.empty() || fd < 0) {
+        ret = OB_ERR_NO_PRIVILEGE;
+      } else {
+        size_t pos = 0;
+        while (OB_SUCC(ret) && pos < relative.size()) {
+          const size_t slash = relative.find('/', pos);
+          const bool last = std::string::npos == slash;
+          const std::string component = relative.substr(pos, last ? slash : slash - pos);
+          const int flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC | (last ? 0 : O_DIRECTORY);
+          const int next_fd = ::openat(fd, component.c_str(), flags);
+          ::close(fd);
+          fd = next_fd;
+          if (fd < 0) { ret = OB_ERR_NO_PRIVILEGE; }
+          pos = last ? relative.size() : slash + 1;
+        }
+      }
+      if (OB_SUCC(ret)) {
+        struct stat st = {};
+        if (0 != ::fstat(fd, &st) || !S_ISREG(st.st_mode)) {
+          ret = OB_ERR_NO_PRIVILEGE;
+        } else if (OB_ISNULL(file = ::fdopen(fd, "rb"))) {
+          ret = OB_IO_ERROR;
+        } else {
+          fd = -1;
+        }
+      }
+      if (fd >= 0) { ::close(fd); }
+    }
+  }
+  return ret;
+}
+
+int get_file_sql_csv_path(const ObRawExpr &raw_expr, std::string &path)
+{
+  int ret = OB_SUCCESS;
+  const ObRawExpr *arg = raw_expr.get_param_count() == 1
+      ? raw_expr.get_param_expr(0) : nullptr;
+  if (OB_ISNULL(arg)) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("read_csv path argument missing", K(raw_expr.get_param_count()));
+  } else if (!arg->is_const_raw_expr()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("read_csv path is not a constant raw expression", K(arg->get_expr_type()));
+  } else if (!arg->get_result_type().is_string_type()) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("read_csv path expression is not a string", K(arg->get_result_type()));
+  } else {
+    const ObConstRawExpr *constant = static_cast<const ObConstRawExpr *>(arg);
+    const ObObj &value = constant->get_value().is_unknown()
+        ? constant->get_param() : constant->get_value();
+    if (value.is_null() || value.is_unknown()) {
+      ret = OB_INVALID_ARGUMENT;
+      LOG_WARN("read_csv path expression has no usable value");
+    } else {
+      const ObString str = value.get_string();
+      path.assign(str.ptr(), str.length());
+    }
+  }
+  return ret;
+}
+} // namespace
+
+FileSqlCsvExpr::FileSqlCsvExpr(ObIAllocator &alloc)
+  : ObFuncExprOperator(alloc, T_FUN_SYS_READ_CSV, "read_csv", 1,
+                       NOT_VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION)
+{}
+
+int FileSqlCsvExpr::calc_result_type1(ObExprResType &type,
+                                      ObExprResType &path,
+                                      ObExprTypeCtx &type_ctx) const
+{
+  UNUSED(type_ctx);
+  type.set_varchar();
+  type.set_length(PATH_MAX);
+  type.set_collation_level(CS_LEVEL_IMPLICIT);
+  type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+  path.set_calc_type(ObVarcharType);
+  return OB_SUCCESS;
+}
+
+int FileSqlCsvExpr::cg_expr(ObExprCGCtx &expr_cg_ctx,
+                            const ObRawExpr &raw_expr,
+                            ObExpr &rt_expr) const
+{
+  UNUSED(expr_cg_ctx);
+  int ret = OB_SUCCESS;
+  std::string path;
+  if (OB_FAIL(get_file_sql_csv_path(raw_expr, path))) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "read_csv requires a constant path");
+  } else {
+    rt_expr.eval_func_ = FileSqlCsvExpr::eval_next_row;
+  }
+  return ret;
+}
+
+int FileSqlCsvExpr::inspect_columns(const ObRawExpr &raw_expr,
+                                    ObSQLSessionInfo *session,
+                                    std::vector<std::string> &column_names)
+{
+  int ret = OB_SUCCESS;
+  FILE *file = nullptr;
+  std::string path;
+  std::vector<FileSqlCsvField> header;
+  column_names.clear();
+  if (OB_FAIL(get_file_sql_csv_path(raw_expr, path))) {
+  } else if (OB_FAIL(open_file_sql_csv(path, session, file))) {
+  } else if (OB_FAIL(read_file_sql_csv_record(file, header))) {
+    if (OB_ITER_END == ret) { ret = OB_INVALID_DATA; }
+  } else {
+    for (size_t i = 0; OB_SUCC(ret) && i < header.size(); ++i) {
+      std::string name = header[i].value_.empty()
+          ? "column" + std::to_string(i + 1) : header[i].value_;
+      const std::string base = name;
+      for (size_t suffix = 2; std::find(column_names.begin(), column_names.end(), name)
+                              != column_names.end(); ++suffix) {
+        name = base + "__" + std::to_string(suffix);
+      }
+      if (name.length() > 128) { ret = OB_SIZE_OVERFLOW; }
+      else { column_names.push_back(std::move(name)); }
+    }
+  }
+  if (nullptr != file) { ::fclose(file); }
+  if (OB_FAIL(ret)) {
+    LOG_WARN("read_csv column inspection failed", K(ret), "path", path.c_str());
+  }
+  return ret;
+}
+
+int FileSqlCsvExpr::eval_next_row(const ObExpr &expr, ObEvalCtx &ctx,
+                                  ObDatum &res_datum)
+{
+  int ret = OB_SUCCESS;
+  FileSqlCsvCtx *csv_ctx = static_cast<FileSqlCsvCtx *>(
+      ctx.exec_ctx_.get_expr_op_ctx(expr.expr_ctx_id_));
+  if (OB_ISNULL(csv_ctx)
+      && OB_FAIL(ctx.exec_ctx_.create_expr_op_ctx(expr.expr_ctx_id_, csv_ctx))) {
+  }
+  if (OB_SUCC(ret) && OB_ISNULL(csv_ctx)) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  }
+  if (OB_SUCC(ret) && !csv_ctx->initialized_) {
+    bool enabled = false;
+    ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+    ObDatum *path_datum = nullptr;
+    if (OB_ISNULL(session)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(session->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+    } else if (!enabled) {
+      ret = OB_NOT_SUPPORTED;
+    } else if (OB_FAIL(expr.eval_param_value(ctx, path_datum))) {
+    } else if (OB_ISNULL(path_datum) || path_datum->is_null()) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      const ObString path_value = path_datum->get_string();
+      const std::string path(path_value.ptr(), path_value.length());
+      if (OB_FAIL(open_file_sql_csv(path, session, csv_ctx->file_))) {
+      } else if (OB_FAIL(read_file_sql_csv_record(csv_ctx->file_, csv_ctx->fields_))) {
+        if (OB_ITER_END == ret) { ret = OB_INVALID_DATA; }
+      } else {
+        csv_ctx->column_count_ = csv_ctx->fields_.size();
+        struct stat st = {};
+        if (0 != ::fstat(::fileno(csv_ctx->file_), &st)) {
+          ret = OB_IO_ERROR;
+        } else {
+          csv_ctx->file_size_ = st.st_size;
+          csv_ctx->modified_at_ = st.st_mtime;
+          csv_ctx->initialized_ = true;
+        }
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    struct stat st = {};
+    if (0 != ::fstat(::fileno(csv_ctx->file_), &st)
+        || st.st_size != csv_ctx->file_size_
+        || st.st_mtime != csv_ctx->modified_at_) {
+      ret = OB_IO_ERROR;
+    } else if (OB_FAIL(read_file_sql_csv_record(csv_ctx->file_, csv_ctx->fields_))) {
+    } else if (csv_ctx->fields_.size() != static_cast<size_t>(csv_ctx->column_count_)) {
+      ret = OB_INVALID_DATA;
+    } else {
+      res_datum.set_string("", 0);
+    }
+  }
+  return ret;
+}
+
+int FileSqlCsvExpr::write_current_row(ObExecContext &exec_ctx,
+                                      ObEvalCtx &eval_ctx,
+                                      const ObExpr &expr,
+                                      const ObIArray<ObExpr *> &columns,
+                                      const ObIArray<int64_t> &column_indexes)
+{
+  int ret = OB_SUCCESS;
+  FileSqlCsvCtx *csv_ctx = static_cast<FileSqlCsvCtx *>(
+      exec_ctx.get_expr_op_ctx(expr.expr_ctx_id_));
+  if (OB_ISNULL(csv_ctx) || columns.count() != column_indexes.count()
+      || csv_ctx->fields_.size() != static_cast<size_t>(csv_ctx->column_count_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < columns.count(); ++i) {
+      ObExpr *column = columns.at(i);
+      const int64_t index = column_indexes.at(i);
+      if (OB_ISNULL(column) || index < 0 || index >= csv_ctx->column_count_) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        const FileSqlCsvField &field = csv_ctx->fields_[index];
+        ObDatum &datum = column->locate_datum_for_write(eval_ctx);
+        if (field.value_.empty() && !field.quoted_) {
+          datum.set_null();
+        } else if (field.value_.empty()) {
+          datum.set_string("", 0);
+        } else {
+          char *dest = column->get_str_res_mem(eval_ctx, field.value_.length());
+          if (OB_ISNULL(dest)) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+          } else {
+            std::memcpy(dest, field.value_.data(), field.value_.length());
+            datum.set_string(dest, field.value_.length());
+          }
+        }
+        if (OB_SUCC(ret)) { column->set_evaluated_projected(eval_ctx); }
+      }
+    }
+  }
+  return ret;
+}
+
+void FileSqlCsvExpr::reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr)
+{
+  FileSqlCsvCtx *csv_ctx = static_cast<FileSqlCsvCtx *>(
+      exec_ctx.get_expr_op_ctx(expr.expr_ctx_id_));
+  if (nullptr != csv_ctx) {
+    if (nullptr != csv_ctx->file_) { ::fclose(csv_ctx->file_); }
+    csv_ctx->file_ = nullptr;
+    csv_ctx->initialized_ = false;
+    csv_ctx->fields_.clear();
   }
 }
 

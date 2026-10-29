@@ -29,6 +29,7 @@
 #include "sql/engine/expr/ob_expr_autoinc_nextval.h"
 #include "sql/engine/expr/ob_expr_column_conv.h"
 #include "sql/engine/expr/ob_expr_version.h"
+#include "sql/engine/expr/ob_expr_generator_func.h"
 #include "sql/resolver/dml/ob_insert_resolver.h"
 #include "sql/resolver/dml/ob_inlist_resolver.h"
 #include "sql/session/ob_local_session_var.h"
@@ -3947,7 +3948,9 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
   }
   CK (OB_NOT_NULL(function_table_expr));
   OZ (function_table_expr->deduce_type(session_info_));
-  if (OB_SUCC(ret) && T_FUN_SYS_GLOB == function_table_expr->get_expr_type()) {
+  if (OB_SUCC(ret)
+      && (T_FUN_SYS_GLOB == function_table_expr->get_expr_type()
+          || T_FUN_SYS_READ_CSV == function_table_expr->get_expr_type())) {
     bool file_sql_enabled = false;
     if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
     } else if (!file_sql_enabled) {
@@ -7642,6 +7645,31 @@ int ObDMLResolver::resolve_function_table_column_item_sys_func(const TableItem &
   CK (OB_LIKELY(table_item.is_function_table()));
   CK (OB_NOT_NULL(table_expr = table_item.function_table_expr_));
   OZ (table_expr->deduce_type(session_info_));
+  if (OB_SUCC(ret) && T_FUN_SYS_READ_CSV == table_expr->get_expr_type()) {
+    std::vector<std::string> names;
+    OZ (FileSqlCsvExpr::inspect_columns(*table_expr, session_info_, names));
+    for (size_t i = 0; OB_SUCC(ret) && i < names.size(); ++i) {
+      ObString stable_name;
+      if (OB_FAIL(ob_write_string(*allocator_,
+                                  ObString::make_string(names[i].c_str()), stable_name))) {
+      } else if (NULL != (col_item = stmt->get_column_item(table_item.table_id_, stable_name))) {
+      } else {
+        OZ (resolve_function_table_column_item(table_item,
+                                               table_expr->get_result_meta(),
+                                               table_expr->get_accuracy(),
+                                               stable_name,
+                                               OB_APP_MIN_COLUMN_ID + i,
+                                               col_item));
+      }
+      if (OB_SUCC(ret) && OB_NOT_NULL(col_item)) {
+        OZ (col_items.push_back(*col_item));
+      }
+    }
+    if (OB_FAIL(ret)) {
+      LOG_WARN("read_csv column resolution failed", K(ret));
+    }
+    return ret;
+  }
   if (OB_FAIL(ret)) { // do nothing ...
   } else if (!ObResolverUtils::is_expr_can_be_used_in_table_function(*table_expr)) {
     ret = OB_NOT_SUPPORTED;

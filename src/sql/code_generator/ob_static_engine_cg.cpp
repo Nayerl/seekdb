@@ -5503,6 +5503,7 @@ int ObStaticEngineCG::generate_spec(ObLogFunctionTable &op, ObFunctionTableSpec 
   if (OB_ISNULL(op.get_stmt())) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(spec.column_exprs_.init(op.get_stmt()->get_column_size()))) {
+  } else if (OB_FAIL(spec.column_indexes_.init(op.get_stmt()->get_column_size()))) {
   } else if (OB_UNLIKELY(op.get_num_of_child() > 1)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_ISNULL(value_raw_expr = op.get_value_expr())) {
@@ -5526,6 +5527,14 @@ int ObStaticEngineCG::generate_spec(ObLogFunctionTable &op, ObFunctionTableSpec 
         OZ (mark_expr_self_produced(col_item->expr_));
         OZ (generate_rt_expr(*col_item->expr_, rt_expr));
         OZ (spec.column_exprs_.push_back(rt_expr));
+        if (OB_SUCC(ret) && T_FUN_SYS_READ_CSV == value_raw_expr->get_expr_type()) {
+          if (col_item->column_id_ < OB_APP_MIN_COLUMN_ID) {
+            ret = OB_ERR_UNEXPECTED;
+          } else {
+            OZ (spec.column_indexes_.push_back(
+                static_cast<int64_t>(col_item->column_id_ - OB_APP_MIN_COLUMN_ID)));
+          }
+        }
       }
     }
   }
