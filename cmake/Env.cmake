@@ -52,6 +52,14 @@ ob_define(USE_LTO_CACHE OFF)
 # 开源模式默认支持系统租户使用向量索引
 ob_define(OB_BUILD_SYS_VEC_IDX ON)
 
+ob_define(OB_BUILD_HIPVS OFF)
+if(OB_BUILD_HIPVS)
+  if(NOT CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "hipVS construction requires Linux with glibc and ROCm")
+  endif()
+  add_definitions(-DOB_BUILD_HIPVS)
+endif()
+
 if(WIN32)
   EXECUTE_PROCESS(COMMAND powershell -NoProfile -Command "$env:PROCESSOR_ARCHITECTURE"
     OUTPUT_VARIABLE ARCHITECTURE)
