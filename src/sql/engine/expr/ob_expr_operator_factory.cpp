@@ -905,6 +905,7 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(FileSqlGlobExpr);
     REG_OP(FileSqlCsvExpr);
     REG_OP(FileSqlJsonExpr);
+    REG_OP(FileSqlParquetExpr);
     REG_OP(ObExprZipf);
     REG_OP(ObExprNormal);
     REG_OP(ObExprUniform);

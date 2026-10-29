@@ -127,6 +127,29 @@ private:
   DISALLOW_COPY_AND_ASSIGN(FileSqlJsonExpr);
 };
 
+class FileSqlParquetExpr : public ObFuncExprOperator
+{
+public:
+  explicit FileSqlParquetExpr(common::ObIAllocator &alloc);
+  virtual ~FileSqlParquetExpr() = default;
+  virtual int calc_result_type1(ObExprResType &type, ObExprResType &path,
+                                common::ObExprTypeCtx &type_ctx) const override;
+  virtual bool need_rt_ctx() const override { return true; }
+  virtual int cg_expr(ObExprCGCtx &expr_cg_ctx, const ObRawExpr &raw_expr,
+                      ObExpr &rt_expr) const override;
+  static int inspect_columns(const ObRawExpr &raw_expr, ObSQLSessionInfo *session,
+                             std::vector<std::string> &column_names,
+                             std::vector<common::ObObjMeta> *column_types = nullptr);
+  static int eval_next_row(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
+  static int write_current_row(ObExecContext &exec_ctx, ObEvalCtx &eval_ctx,
+                               const ObExpr &expr,
+                               const common::ObIArray<ObExpr *> &columns,
+                               const common::ObIArray<int64_t> &column_indexes);
+  static void reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr);
+private:
+  DISALLOW_COPY_AND_ASSIGN(FileSqlParquetExpr);
+};
+
 } /* namespace sql */
 } /* namespace oceanbase */
 

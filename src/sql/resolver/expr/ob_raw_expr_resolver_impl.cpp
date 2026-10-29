@@ -5047,7 +5047,8 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
                      || 0 == name.case_compare("glob")
                      || 0 == name.case_compare("read_csv")
                      || 0 == name.case_compare("read_json")
-                     || 0 == name.case_compare("read_ndjson"))) {
+                     || 0 == name.case_compare("read_ndjson")
+                     || 0 == name.case_compare("read_parquet"))) {
         ret = OB_ERR_FUNCTION_UNKNOWN;
         LOG_USER_ERROR(OB_ERR_FUNCTION_UNKNOWN, "FUNCTION", name.length(), name.ptr());
       }
@@ -5099,9 +5100,10 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
       const bool is_read_csv = 0 == func_name.case_compare("read_csv");
       const bool is_read_json = 0 == func_name.case_compare("read_json")
           || 0 == func_name.case_compare("read_ndjson");
+      const bool is_read_parquet = 0 == func_name.case_compare("read_parquet");
       const int32_t raw_num = OB_ISNULL(node->children_[1])
           ? 0 : node->children_[1]->num_child_;
-      const int32_t param_num = (is_read_csv || is_read_json) ? 1 : raw_num;
+      const int32_t param_num = (is_read_csv || is_read_json || is_read_parquet) ? 1 : raw_num;
       if (OB_ISNULL(node->children_) || OB_ISNULL(node->children_[1])
           || OB_UNLIKELY(T_EXPR_LIST != node->children_[1]->type_)) {
         ret = OB_ERR_PARSER_SYNTAX;
@@ -5144,6 +5146,8 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
                 ret = OB_ERR_PARSE_SQL;
               }
             }
+          } else if (is_read_parquet && i > 0) {
+            ret = OB_NOT_SUPPORTED;
           } else if (is_read_json && i > 0) {
             const ParseNode *option = node->children_[1]->children_[i];
             if (T_OP_EQ != option->type_ || 2 != option->num_child_

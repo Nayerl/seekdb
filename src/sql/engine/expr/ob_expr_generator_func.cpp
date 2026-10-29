@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX  SQL_ENG
 #include "sql/engine/expr/ob_expr_generator_func.h"
+#include "sql/engine/expr/ob_file_sql_parquet_reader.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/session/ob_sql_session_info.h"
 #include "share/system_variable/ob_sys_var_class_type.h"
@@ -297,6 +298,8 @@ struct FileSqlCsvCtx : public ObExprOperatorCtx
   std::vector<FileSqlCsvField> fields_;
   std::vector<std::string> column_names_;
   int64_t column_count_ = 0;
+  std::vector<std::vector<file_sql_parquet::Cell>> parquet_rows_;
+  size_t parquet_next_ = 0;
 };
 
 bool parse_file_sql_csv_int(const std::string &text, int64_t &value)
@@ -898,6 +901,8 @@ void FileSqlCsvExpr::reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr)
     csv_ctx->initialized_ = false;
     csv_ctx->fields_.clear();
     csv_ctx->column_names_.clear();
+    csv_ctx->parquet_rows_.clear();
+    csv_ctx->parquet_next_ = 0;
   }
 }
 
@@ -1043,6 +1048,160 @@ int FileSqlJsonExpr::write_current_row(ObExecContext &exec_ctx,
 }
 
 void FileSqlJsonExpr::reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr)
+{
+  FileSqlCsvExpr::reset_runtime(exec_ctx, expr);
+}
+
+FileSqlParquetExpr::FileSqlParquetExpr(ObIAllocator &alloc)
+  : ObFuncExprOperator(alloc, T_FUN_SYS_READ_PARQUET, "read_parquet", 1,
+                       NOT_VALID_FOR_GENERATED_COL, NOT_ROW_DIMENSION)
+{}
+
+int FileSqlParquetExpr::calc_result_type1(ObExprResType &type,
+                                          ObExprResType &path,
+                                          ObExprTypeCtx &type_ctx) const
+{
+  UNUSED(type_ctx);
+  type.set_varchar();
+  type.set_length(PATH_MAX);
+  type.set_collation_level(CS_LEVEL_IMPLICIT);
+  type.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+  path.set_calc_type(ObVarcharType);
+  return OB_SUCCESS;
+}
+
+int FileSqlParquetExpr::cg_expr(ObExprCGCtx &expr_cg_ctx,
+                                const ObRawExpr &raw_expr,
+                                ObExpr &rt_expr) const
+{
+  UNUSED(expr_cg_ctx);
+  int ret = OB_SUCCESS;
+  std::string path;
+  if (OB_FAIL(get_file_sql_csv_path(raw_expr, path))) {
+    LOG_USER_ERROR(OB_INVALID_ARGUMENT, "read_parquet requires a constant path");
+  } else {
+    rt_expr.eval_func_ = FileSqlParquetExpr::eval_next_row;
+  }
+  return ret;
+}
+
+int FileSqlParquetExpr::inspect_columns(const ObRawExpr &raw_expr,
+                                        ObSQLSessionInfo *session,
+                                        std::vector<std::string> &column_names,
+                                        std::vector<ObObjMeta> *column_types)
+{
+  int ret = OB_SUCCESS;
+  FILE *file = nullptr;
+  std::string path;
+  file_sql_parquet::Result parsed;
+  column_names.clear();
+  if (nullptr != column_types) { column_types->clear(); }
+  if (OB_FAIL(get_file_sql_csv_path(raw_expr, path))) {
+  } else if (OB_FAIL(open_file_sql_csv(path, session, file))) {
+  } else if (!file_sql_parquet::load(file, parsed, false)) {
+    ret = OB_INVALID_DATA;
+  } else {
+    for (const file_sql_parquet::Column &col : parsed.columns) {
+      column_names.push_back(col.name);
+      if (nullptr != column_types) {
+        ObObjMeta meta = raw_expr.get_result_meta();
+        if (6 == col.converted) { meta.set_type(ObDateType); }
+        else if (0 == col.physical) { meta.set_type(ObTinyIntType); }
+        else if (1 == col.physical || 2 == col.physical) { meta.set_type(ObIntType); }
+        else if (4 == col.physical || 5 == col.physical) { meta.set_type(ObDoubleType); }
+        else if (6 == col.physical) { meta.set_type(ObVarcharType); }
+        column_types->push_back(meta);
+      }
+    }
+  }
+  if (nullptr != file) { ::fclose(file); }
+  if (OB_FAIL(ret)) {
+    LOG_WARN("read_parquet column inspection failed", K(ret), "path", path.c_str());
+  }
+  return ret;
+}
+
+int FileSqlParquetExpr::eval_next_row(const ObExpr &expr, ObEvalCtx &ctx,
+                                      ObDatum &res_datum)
+{
+  int ret = OB_SUCCESS;
+  FileSqlCsvCtx *parquet_ctx = static_cast<FileSqlCsvCtx *>(
+      ctx.exec_ctx_.get_expr_op_ctx(expr.expr_ctx_id_));
+  if (OB_ISNULL(parquet_ctx)
+      && OB_FAIL(ctx.exec_ctx_.create_expr_op_ctx(expr.expr_ctx_id_, parquet_ctx))) {
+  }
+  if (OB_SUCC(ret) && OB_ISNULL(parquet_ctx)) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+  if (OB_SUCC(ret) && !parquet_ctx->initialized_) {
+    bool enabled = false;
+    ObSQLSessionInfo *session = ctx.exec_ctx_.get_my_session();
+    ObDatum *path_datum = nullptr;
+    if (OB_ISNULL(session)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(session->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+    } else if (!enabled) {
+      ret = OB_NOT_SUPPORTED;
+    } else if (OB_FAIL(expr.eval_param_value(ctx, path_datum))) {
+    } else if (OB_ISNULL(path_datum) || path_datum->is_null()) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      const ObString value = path_datum->get_string();
+      const std::string path(value.ptr(), value.length());
+      file_sql_parquet::Result parsed;
+      if (OB_FAIL(open_file_sql_csv(path, session, parquet_ctx->file_))) {
+      } else if (!file_sql_parquet::load(parquet_ctx->file_, parsed, true)) {
+        ret = OB_INVALID_DATA;
+      } else {
+        parquet_ctx->column_count_ = parsed.columns.size();
+        parquet_ctx->parquet_rows_ = std::move(parsed.rows);
+        parquet_ctx->parquet_next_ = 0;
+        struct stat st = {};
+        if (0 != ::fstat(::fileno(parquet_ctx->file_), &st)) {
+          ret = OB_IO_ERROR;
+        } else {
+          parquet_ctx->file_size_ = st.st_size;
+          parquet_ctx->modified_at_ = st.st_mtime;
+          parquet_ctx->initialized_ = true;
+        }
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    struct stat st = {};
+    if (0 != ::fstat(::fileno(parquet_ctx->file_), &st)
+        || st.st_size != parquet_ctx->file_size_
+        || st.st_mtime != parquet_ctx->modified_at_) {
+      ret = OB_IO_ERROR;
+    } else if (parquet_ctx->parquet_next_ >= parquet_ctx->parquet_rows_.size()) {
+      ret = OB_ITER_END;
+    } else {
+      const std::vector<file_sql_parquet::Cell> &row =
+          parquet_ctx->parquet_rows_[parquet_ctx->parquet_next_++];
+      parquet_ctx->fields_.assign(parquet_ctx->column_count_, FileSqlCsvField());
+      if (row.size() != parquet_ctx->fields_.size()) {
+        ret = OB_INVALID_DATA;
+      } else {
+        for (size_t i = 0; i < row.size(); ++i) {
+          parquet_ctx->fields_[i].value_ = row[i].text;
+          parquet_ctx->fields_[i].quoted_ = !row[i].is_null;
+        }
+        res_datum.set_string("", 0);
+      }
+    }
+  }
+  return ret;
+}
+
+int FileSqlParquetExpr::write_current_row(ObExecContext &exec_ctx,
+                                           ObEvalCtx &eval_ctx,
+                                           const ObExpr &expr,
+                                           const ObIArray<ObExpr *> &columns,
+                                           const ObIArray<int64_t> &column_indexes)
+{
+  return FileSqlCsvExpr::write_current_row(
+      exec_ctx, eval_ctx, expr, columns, column_indexes);
+}
+
+void FileSqlParquetExpr::reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr)
 {
   FileSqlCsvExpr::reset_runtime(exec_ctx, expr);
 }

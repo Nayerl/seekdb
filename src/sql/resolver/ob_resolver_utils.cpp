@@ -163,6 +163,25 @@ int ObResolverUtils::get_all_function_table_column_names(const TableItem &table_
     }
     return ret;
   }
+  if (nullptr != table_item.function_table_expr_
+      && T_FUN_SYS_READ_PARQUET == table_item.function_table_expr_->get_expr_type()) {
+    int ret = OB_SUCCESS;
+    std::vector<std::string> names;
+    if (OB_FAIL(FileSqlParquetExpr::inspect_columns(*table_item.function_table_expr_,
+                                                    params.session_info_, names))) {
+    } else {
+      for (const std::string &name : names) {
+        ObString stable_name;
+        if (OB_FAIL(ob_write_string(*params.allocator_,
+                                    ObString::make_string(name.c_str()), stable_name))) {
+          break;
+        } else if (OB_FAIL(column_names.push_back(stable_name))) {
+          break;
+        }
+      }
+    }
+    return ret;
+  }
   int ret = OB_SUCCESS;
   ObRawExpr *table_expr = NULL;
   ObPLPackageGuard *package_guard = nullptr;
@@ -2698,7 +2717,8 @@ bool ObResolverUtils::is_expr_can_be_used_in_table_function(const ObRawExpr &exp
   } else if (T_FUN_SYS_GENERATOR == expr.get_expr_type()
              || T_FUN_SYS_GLOB == expr.get_expr_type()
              || T_FUN_SYS_READ_CSV == expr.get_expr_type()
-             || T_FUN_SYS_READ_JSON == expr.get_expr_type()) {
+             || T_FUN_SYS_READ_JSON == expr.get_expr_type()
+             || T_FUN_SYS_READ_PARQUET == expr.get_expr_type()) {
     // for generator(N) stream function
     bret = true;
   }
