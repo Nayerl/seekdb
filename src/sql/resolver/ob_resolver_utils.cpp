@@ -120,6 +120,10 @@ int ObResolverUtils::get_all_function_table_column_names(const TableItem &table_
                                                          ObResolverParams &params,
                                                          ObIArray<ObString> &column_names)
 {
+  if (nullptr != table_item.function_table_expr_
+      && T_FUN_SYS_GLOB == table_item.function_table_expr_->get_expr_type()) {
+    return column_names.push_back(ObString("file"));
+  }
   int ret = OB_SUCCESS;
   ObRawExpr *table_expr = NULL;
   ObPLPackageGuard *package_guard = nullptr;
@@ -2652,7 +2656,8 @@ bool ObResolverUtils::is_expr_can_be_used_in_table_function(const ObRawExpr &exp
   if (expr.get_result_type().is_ext()) {
     // for UDF
     bret = true;
-  } else if (T_FUN_SYS_GENERATOR == expr.get_expr_type()) {
+  } else if (T_FUN_SYS_GENERATOR == expr.get_expr_type()
+             || T_FUN_SYS_GLOB == expr.get_expr_type()) {
     // for generator(N) stream function
     bret = true;
   }

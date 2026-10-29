@@ -3947,6 +3947,14 @@ int ObDMLResolver::resolve_function_table_item(const ParseNode &parse_tree,
   }
   CK (OB_NOT_NULL(function_table_expr));
   OZ (function_table_expr->deduce_type(session_info_));
+  if (OB_SUCC(ret) && T_FUN_SYS_GLOB == function_table_expr->get_expr_type()) {
+    bool file_sql_enabled = false;
+    if (OB_FAIL(session_info_->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, file_sql_enabled))) {
+    } else if (!file_sql_enabled) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "file SQL is disabled");
+    }
+  }
   if (OB_SUCC(ret)) {
     if (function_table_expr->get_result_type().is_ext()) {
       // PL collection used in TABLE(), extract PL info from schema
@@ -7626,6 +7634,9 @@ int ObDMLResolver::resolve_function_table_column_item_sys_func(const TableItem &
   ColumnItem *col_item = NULL;
   ObDMLStmt *stmt = get_stmt();
   const ObUserDefinedType *user_type = NULL;
+  const ObString column_name = (nullptr != table_item.function_table_expr_
+                                && T_FUN_SYS_GLOB == table_item.function_table_expr_->get_expr_type())
+                                 ? ObString("file") : ObString("COLUMN_VALUE");
 
   CK (OB_NOT_NULL(stmt));
   CK (OB_LIKELY(table_item.is_function_table()));
@@ -7635,13 +7646,13 @@ int ObDMLResolver::resolve_function_table_column_item_sys_func(const TableItem &
   } else if (!ObResolverUtils::is_expr_can_be_used_in_table_function(*table_expr)) {
     ret = OB_NOT_SUPPORTED;
     LOG_USER_ERROR(OB_NOT_SUPPORTED, "access rows from a non-nested table item");
-  } else if (NULL != (col_item = stmt->get_column_item(table_item.table_id_, ObString("COLUMN_VALUE")))) {
+  } else if (NULL != (col_item = stmt->get_column_item(table_item.table_id_, column_name))) {
     //exist, ignore resolve...
   } else {
     OZ (resolve_function_table_column_item(table_item,
                                            table_expr->get_result_meta(),
                                            table_expr->get_accuracy(),
-                                           ObString("COLUMN_VALUE"),
+                                           column_name,
                                            OB_APP_MIN_COLUMN_ID,
                                            col_item));
   }

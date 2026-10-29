@@ -19,6 +19,7 @@
 #include "sql/engine/basic/ob_function_table_op.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "sql/engine/expr/ob_expr_generator_func.h"
 
 
 namespace oceanbase
@@ -50,6 +51,9 @@ int ObFunctionTableOp::inner_rescan()
   if (OB_FAIL(ObOperator::inner_rescan())) {
   } else {
     node_idx_ = 0;
+    if (OB_NOT_NULL(MY_SPEC.value_expr_) && T_FUN_SYS_GLOB == MY_SPEC.value_expr_->type_) {
+      FileSqlGlobExpr::reset_runtime(ctx_, *MY_SPEC.value_expr_);
+    }
     if (MY_SPEC.has_correlated_expr_) {
       row_count_ = 0;
       col_count_ = 0;

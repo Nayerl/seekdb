@@ -902,6 +902,7 @@ void ObExprOperatorFactory::register_expr_operators()
     REG_OP(ObExprDecode);
     REG_OP(ObExprICUVersion);
     REG_OP(ObExprGeneratorFunc);
+    REG_OP(FileSqlGlobExpr);
     REG_OP(ObExprZipf);
     REG_OP(ObExprNormal);
     REG_OP(ObExprUniform);

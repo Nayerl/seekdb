@@ -48,6 +48,25 @@ private:
 	DISALLOW_COPY_AND_ASSIGN(ObExprGeneratorFunc);
 };
 
+// The file discovery function is a table-valued stream, like generator().
+class FileSqlGlobExpr : public ObFuncExprOperator
+{
+public:
+  explicit FileSqlGlobExpr(common::ObIAllocator &alloc);
+  virtual ~FileSqlGlobExpr() = default;
+  virtual int calc_result_type1(ObExprResType &type,
+                                ObExprResType &pattern,
+                                common::ObExprTypeCtx &type_ctx) const override;
+  virtual bool need_rt_ctx() const override { return true; }
+  virtual int cg_expr(ObExprCGCtx &expr_cg_ctx,
+                      const ObRawExpr &raw_expr,
+                      ObExpr &rt_expr) const override;
+  static int eval_next_file(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &res_datum);
+  static void reset_runtime(ObExecContext &exec_ctx, const ObExpr &expr);
+private:
+  DISALLOW_COPY_AND_ASSIGN(FileSqlGlobExpr);
+};
+
 } /* namespace sql */
 } /* namespace oceanbase */
 
