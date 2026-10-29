@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL
 #include "config_bridge.h"
 #include "sql/ob_sql.h"
+#include "sql/ob_file_sql_copy_compat.h"
 #include "lib/json/ob_json_print_utils.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "query/runtime/ob_query_runtime_environment.h"
@@ -189,6 +190,8 @@ int ObSql::stmt_prepare(const common::ObString &stmt,
 int ObSql::stmt_query(const common::ObString &stmt, ObSqlCtx &context, ObResultSet &result)
 {
   int ret = OB_SUCCESS;
+  std::string rewritten_file_sql_copy;
+  ObString executable_stmt = stmt;
   LinkExecCtxGuard link_guard(result.get_session(), result.get_exec_context());
   ObTraceSpanGuard compile_span(&result.get_session(), TRACE_SQL_COMPILE);
   ObTruncatedString trunc_stmt(stmt);
@@ -201,7 +204,20 @@ int ObSql::stmt_query(const common::ObString &stmt, ObSqlCtx &context, ObResultS
   NG_TRACE(parse_begin);
   //1 check inited
   if (OB_FAIL(sanity_check(context))) {
-  } else if (OB_FAIL(handle_text_query(stmt, context, result))) {
+  } else if (file_sql_copy::rewrite(std::string(stmt.ptr(), stmt.length()),
+                                    rewritten_file_sql_copy)) {
+    bool enabled = false;
+    if (OB_FAIL(result.get_session().get_sys_variable(
+            share::SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+    } else if (!enabled) {
+      ret = OB_NOT_SUPPORTED;
+      result.get_exec_context().set_need_disconnect(false);
+    } else {
+      executable_stmt.assign_ptr(rewritten_file_sql_copy.data(),
+                                 static_cast<int32_t>(rewritten_file_sql_copy.size()));
+    }
+  }
+  if (OB_SUCC(ret) && OB_FAIL(handle_text_query(executable_stmt, context, result))) {
     if (OB_EAGAIN != ret) {
     }
   }
