@@ -5094,17 +5094,52 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
   if (OB_SUCC(ret)) {
     func_expr->set_func_name(func_name);
     if (node->num_child_ > 1) {
+      const bool is_read_csv = 0 == func_name.case_compare("read_csv");
+      const int32_t raw_num = OB_ISNULL(node->children_[1])
+          ? 0 : node->children_[1]->num_child_;
+      const int32_t param_num = is_read_csv ? 1 : raw_num;
       if (OB_ISNULL(node->children_) || OB_ISNULL(node->children_[1])
           || OB_UNLIKELY(T_EXPR_LIST != node->children_[1]->type_)) {
         ret = OB_ERR_PARSER_SYNTAX;
-      } else if (OB_FAIL(func_expr->init_param_exprs(node->children_[1]->num_child_))) {
+      } else if (OB_FAIL(func_expr->init_param_exprs(param_num))) {
       } else {
         ObRawExpr *para_expr = NULL;
-        int32_t num = node->children_[1]->num_child_;
+        bool saw_header = false;
+        bool saw_sample_size = false;
         int current_columns_count = ctx_.columns_->count();
-        for (int32_t i = 0; OB_SUCC(ret) && i < num; i++) {
+        for (int32_t i = 0; OB_SUCC(ret) && i < raw_num; i++) {
           if (OB_ISNULL(node->children_[1]->children_[i])) {
             ret = OB_ERR_PARSER_SYNTAX;
+          } else if (is_read_csv && i > 0) {
+            const ParseNode *option = node->children_[1]->children_[i];
+            if (T_OP_EQ != option->type_ || 2 != option->num_child_
+                || OB_ISNULL(option->children_) || OB_ISNULL(option->children_[0])
+                || OB_ISNULL(option->children_[1])
+                || T_COLUMN_REF != option->children_[0]->type_
+                || OB_ISNULL(option->children_[0]->str_value_)) {
+              ret = OB_ERR_PARSE_SQL;
+            } else {
+              const ParseNode *key = option->children_[0];
+              const ParseNode *value = option->children_[1];
+              const ObString name(key->str_len_, key->str_value_);
+              if (0 == name.case_compare("header") && !saw_header) {
+                saw_header = true;
+                if (T_BOOL != value->type_ || 1 != value->value_) {
+                  ret = OB_NOT_SUPPORTED;
+                }
+              } else if (0 == name.case_compare("sample_size") && !saw_sample_size) {
+                saw_sample_size = true;
+                const bool minus_one = (T_INT == value->type_ && -1 == value->value_)
+                    || (T_OP_NEG == value->type_ && 1 == value->num_child_
+                        && OB_NOT_NULL(value->children_)
+                        && OB_NOT_NULL(value->children_[0])
+                        && T_INT == value->children_[0]->type_
+                        && 1 == value->children_[0]->value_);
+                if (!minus_one) { ret = OB_NOT_SUPPORTED; }
+              } else {
+                ret = OB_ERR_PARSE_SQL;
+              }
+            }
           } else if (T_EXPR_WITH_ALIAS == node->children_[1]->children_[i]->type_) {
             // only udf allow the the expr alias.
             ret = OB_ERR_FUNCTION_UNKNOWN;
@@ -5118,7 +5153,7 @@ int ObRawExprResolverImpl::process_fun_sys_node(const ParseNode *node,
         if (ret != OB_SUCCESS) {
           int temp_ret = ret;
           if (OB_FAIL(ObRawExprUtils::function_alias(ctx_.expr_factory_, func_expr))) {
-          } else if (OB_FAIL(func_expr->check_param_num(num))) {
+          } else if (OB_FAIL(func_expr->check_param_num(param_num))) {
             if (OB_ERR_FUNCTION_UNKNOWN != ret) {
             }
           }
