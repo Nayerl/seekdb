@@ -42,6 +42,8 @@
 
 GPU 功能默认关闭；开启需要 glibc ≥ 2.34 及 hipVS 的 CAGRA/HNSW C API。先准备 seekdb 构建依赖和仓库锁定的 Rust 版本，再在仓库根目录执行：
 
+课程参考中的 `-DOB_BUILD_CUVS=ON` 与下面的 `-DOB_BUILD_HIPVS=ON` 等价；二者都选择本项目的 AMD HNSW 构建实现。同时指定时值必须一致，避免配置成功但生成不符合预期的二进制。
+
 ```bash
 ./build.sh release --init -DOB_BUILD_HIPVS=ON \
   -DHIPVS_ROOT=/opt/hipvs -DROCM_ROOT=/opt/rocm

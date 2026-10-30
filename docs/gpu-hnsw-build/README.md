@@ -22,6 +22,11 @@ hipVS C library exposing CAGRA construction and HNSW conversion/serialization.
 The tested Radeon image provides hipVS under `/opt/hipvs` and ROCm under
 `/opt/rocm`. See [the measured report](REPORT.md) for exact versions.
 
+The course build flag `-DOB_BUILD_CUVS=ON` is accepted as an alias of
+`-DOB_BUILD_HIPVS=ON`. Both enable this AMD HNSW construction implementation;
+if both flags are supplied, their values must agree. Leaving both flags unset
+keeps the default CPU build.
+
 ```bash
 # Initialize normal seekdb build dependencies first, if needed.
 ./build.sh release --init -DOB_BUILD_HIPVS=ON \
