@@ -1,0 +1,2 @@
+# Preserve the exact --version output, including BUILD_INFO's trailing space.
+candidate-version.txt -whitespace

@@ -1,8 +1,11 @@
 # GPU construction of native HNSW indexes
 
-Latest submission: [Chinese instructions and 2026-10-30 reproduction](SUBMISSION.md).
-The current `LIB=CUVS` build measured **8.0777×** construction speedup; its
-separate raw results are in [radeon-20261030-cuvs](results/radeon-20261030-cuvs).
+Latest submission: [Chinese instructions](SUBMISSION.md) and
+[2026-10-31 build/deployment acceptance](ENTRY_AUDIT_20261031.md).
+The fully rebuilt course-flag binary measured **7.7807×** construction speedup;
+raw results are in [radeon-20261031-entry](results/radeon-20261031-entry).
+The separate historical 8.0777× campaign remains in
+[radeon-20261030-cuvs](results/radeon-20261030-cuvs).
 
 `LIB=HIPVS` uses AMD hipVS to construct a CAGRA base graph on the GPU, converts
 it into a full mutable HNSW graph with a CPU hierarchy, and imports that graph
@@ -48,7 +51,9 @@ when building `seekdb`. The `server` install component places the worker in
 relative runtime search path locates that bridge. The bridge retains the
 configured hipVS/ROCm library paths. `tools/deploy/copy.sh` also copies the
 worker and bridge to its `bin`/`lib` layout for GPU builds. Keep the normal CPU
-deployment by configuring without `-DOB_BUILD_HIPVS=ON`.
+deployment by leaving both GPU flags disabled. The deployment script reads the
+current CMake configuration, ignores stale GPU artifacts in CPU builds, and
+fails when an enabled build is missing its worker or bridge.
 
 Use a local filesystem for the live database. The tested cloud's persistent
 `/workspace` is NFS and rejects seekdb's `fallocate`; retain source, binaries,
@@ -201,10 +206,11 @@ record their own source manifest and environment.
 
 ```bash
 python3 docs/gpu-hnsw-build/verify_evidence.py \
-  --results-dir docs/gpu-hnsw-build/results/radeon-20261030-cuvs
+  --results-dir docs/gpu-hnsw-build/results/radeon-20261030-cuvs \
+  --source-ref 0e86b8c38afaf8fe3359041645c9b53c5a8524fe
 ```
 
-This verifies 16 current measured source files, six new timed runs, quality,
+This verifies 16 measured source files at the recorded commit, six timed runs, quality,
 persistence results, and the new kernel trace. It remains an offline evidence
 check, not a fresh GPU benchmark execution.
 

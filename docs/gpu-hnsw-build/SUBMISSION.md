@@ -12,7 +12,17 @@
 - 本轮修改基于该分支已有实现 `c393a801db3b3ad1640b5445ed292799101d3e11`；完整源码以包含本文的提交为准。
 - 本题按用户提供的新题面在 seekdb 中实现，原有 Qoder/PowerContext 项目未混入本次提交。
 
-## 本次真实测量（2026-10-30，Radeon Cloud）
+## 最新验收（2026-10-31）
+
+本轮自行复现并修复了课程编译开关未启用 GPU、组件安装漏文件/布局不一致、部署复制不完整和新增头文件未登记等入口缺口。没有平台原始失败日志，不能据此断言历史失败原因。
+
+在 b35b7d4c824d13c71737332b1c5ce333b5f1ff28 的独立检出中，仅传 `OB_BUILD_CUVS=ON`，从空目录完整编译 seekdb。9,248 个已跟踪文件构建前后哈希不变，二进制内嵌完整提交号。使用实际 GPU 子目录 `server` 组件安装脚本和新编译主程序，不设置 `LD_LIBRARY_PATH`，27 项 SQL 检查、三轮 CPU/GPU 对照、DML/过滤和重启全部通过。
+
+50,000 × 128、M=32：CPU/GPU 中位数 **24.798575966 / 3.187198209 秒，加速 7.780682072 倍**；构建 Recall@10 **0.996 / 1.000**，重启后 **0.999**。另有五组输入、30 次 fresh 构建及重启检查，和最终 `copy.sh` 的真实 GPU 产物部署/配置失败检查。
+
+最终发布中的 17 个实现/构建/验证文件与完整构建一致，`copy.sh` 的后续补充单独验过；后续文档和材料提交没有再次从空目录编译 C++。详见 [完整报告与限制](ENTRY_AUDIT_20261031.md)、[新证据及离线核验](results/radeon-20261031-entry/README.md)。完整 CPack 打包及 Bazel GPU 构建尚未通过，不能把上述组件运行验收等同于两者通过。
+
+## 历史真实测量（2026-10-30，Radeon Cloud）
 
 同一组 50,000 × 128 float32 向量、100 个独立查询，L2，M=32，ef_construction=200，ef_search=1000。CPU 与 GPU 各三轮，交替执行顺序；每轮重新建索引。计时包含 SQL 建索引至首条共同可用性查询完成，不包含数据生成、导入、精确真值计算和服务启动。
 
@@ -106,12 +116,13 @@ python3 .github/script/seekdb/sdb.py wait-ready \
 ```bash
 python3 -m unittest discover -s unittest/sql/vector_index -p 'test_hipvs_*.py' -v
 python3 docs/gpu-hnsw-build/verify_evidence.py \
-  --results-dir docs/gpu-hnsw-build/results/radeon-20261030-cuvs
+  --results-dir docs/gpu-hnsw-build/results/radeon-20261030-cuvs \
+  --source-ref 0e86b8c38afaf8fe3359041645c9b53c5a8524fe
 ```
 
-前者应通过 14 项回归；后者核对本轮 16 个源码文件、六轮原始计时、质量、重启和内核 CSV，输出 `verified=true`。它是离线一致性检查，不能代替重新执行 GPU 测试。
+前者应通过 14 项回归；后者核对 2026-10-30 的 0e86 提交所对应的 16 个源码文件、六轮原始计时、质量、重启和内核 CSV，输出 `verified=true`。后续入口与部署修复不改写这组历史证据。它是离线一致性检查，不能代替重新执行 GPU 测试。
 
-构建使用 Git archive 加本地源码增量，因此二进制内嵌 revision 为空。应联合核对 `source-snapshot.json`、当前 `source-sha256.json`、构建日志及实际二进制哈希；不以空 revision 声称其他提交已被验证。提交说明在实测后更新，16 个测量相关源码哈希保持对应本次测试版本。
+2026-10-30 这轮构建使用 Git archive 加本地源码增量，因此二进制内嵌 revision 为空。应联合核对该历史目录的 `source-snapshot.json`、`source-sha256.json`、构建日志及实际二进制哈希；不以空 revision 声称其他提交已被验证。16 个测量相关源码哈希对应该历史版本。2026-10-31 新构建的版本号和证据见上节。
 
 ## 证据与边界
 
@@ -123,4 +134,4 @@ python3 docs/gpu-hnsw-build/verify_evidence.py \
 
 提交材料包为同目录的 `seekdb-hipvs-submission.zip`，包含本说明、实现相关源码、测试、原始证据和相对赛事基线的补丁；完整 seekdb 工程由仓库提供，材料包不是独立的完整源码镜像。校验文件为 `seekdb-hipvs-submission.zip.sha256`。
 
-测评平台填写本仓库地址、分支及最终推送的 commit hash，并上传材料包。平台登录与最终提交需由参赛者本人完成。
+测评平台填写本仓库地址、分支及最终推送的 commit hash，并上传与该版本对应的材料包。
