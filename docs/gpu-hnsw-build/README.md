@@ -38,8 +38,12 @@ python3 .github/script/seekdb/sdb.py start \
 
 Deploy `seekdb_hipvs_hnsw_worker` beside the seekdb executable and
 `libseekdb_hipvs_hnsw.so` in its library directory. CMake builds the worker
-when building `seekdb` and installs both supporting artifacts. Keep the normal
-CPU deployment by configuring without `-DOB_BUILD_HIPVS=ON`.
+when building `seekdb`. The `server` install component places the worker in
+`usr/bin` beside seekdb and the bridge in `usr/libexec/seekdb/lib`; the worker's
+relative runtime search path locates that bridge. The bridge retains the
+configured hipVS/ROCm library paths. `tools/deploy/copy.sh` also copies the
+worker and bridge to its `bin`/`lib` layout for GPU builds. Keep the normal CPU
+deployment by configuring without `-DOB_BUILD_HIPVS=ON`.
 
 Use a local filesystem for the live database. The tested cloud's persistent
 `/workspace` is NFS and rejects seekdb's `fallocate`; retain source, binaries,

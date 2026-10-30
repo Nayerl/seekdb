@@ -50,6 +50,7 @@ function do_install {
     [[ "$quiet" == "false" ]] && echo -e "\033[0;32mOK\033[0m"
   else
     [[ "$quiet" == "false" ]] && echo -e "\033[0;31mFAIL\033[0m\n$err_msg"
+    return 1
   fi
 }
 
@@ -63,6 +64,10 @@ then
   mkdir -p $ADMIN_DIR
 
   do_install $BUILD_DIR/src/observer/seekdb $BIN_DIR/seekdb
+  if [[ -f "$BUILD_DIR/src/observer/seekdb_hipvs_hnsw_worker" ]]; then
+    do_install "$BUILD_DIR/src/observer/seekdb_hipvs_hnsw_worker" "$BIN_DIR/" || exit 1
+    do_install "$BUILD_DIR/lib/libseekdb_hipvs_hnsw.so" "$LIB_DIR/" || exit 1
+  fi
   do_install "$BUILD_DIR/syspack_release/*" $ADMIN_DIR
   do_install $SOURCE_DIR/deps/3rd/usr/local/oceanbase/devtools/bin/llvm-symbolizer $TOOL_DIR/
   do_install $SOURCE_DIR/rpm/.dep_create/lib/libstdc++.so.6 $LIB_DIR true

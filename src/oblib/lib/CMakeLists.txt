@@ -18,7 +18,8 @@ if(OB_BUILD_HIPVS)
   set_target_properties(seekdb_hipvs_hnsw PROPERTIES
     C_VISIBILITY_PRESET hidden
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
-    BUILD_RPATH "${HIPVS_ROOT}/lib;${ROCM_ROOT}/lib")
+    BUILD_RPATH "${HIPVS_ROOT}/lib;${ROCM_ROOT}/lib"
+    INSTALL_RPATH "${HIPVS_ROOT}/lib;${ROCM_ROOT}/lib")
   target_compile_definitions(seekdb_hipvs_hnsw PRIVATE __HIP_PLATFORM_AMD__)
   target_include_directories(seekdb_hipvs_hnsw PRIVATE "${HIPVS_ROOT}/include" "${ROCM_ROOT}/include")
   target_link_libraries(seekdb_hipvs_hnsw PRIVATE "${HIPVS_C_LIBRARY}")
@@ -33,9 +34,14 @@ if(OB_BUILD_HIPVS)
   target_link_libraries(seekdb_hipvs_hnsw_worker PRIVATE seekdb_hipvs_hnsw)
   set_target_properties(seekdb_hipvs_hnsw_worker PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/src/observer"
-    INSTALL_RPATH "$ORIGIN/../lib")
-  install(TARGETS seekdb_hipvs_hnsw_worker RUNTIME DESTINATION bin)
-  install(TARGETS seekdb_hipvs_hnsw LIBRARY DESTINATION lib)
+    BUILD_RPATH "$ORIGIN/../lib"
+    INSTALL_RPATH "$ORIGIN/../libexec/seekdb/lib")
+  # Package the worker beside seekdb so /proc/self/exe-based discovery also
+  # works outside the build tree. CPack selects the server component.
+  install(TARGETS seekdb_hipvs_hnsw_worker
+    RUNTIME DESTINATION usr/bin COMPONENT server)
+  install(TARGETS seekdb_hipvs_hnsw
+    LIBRARY DESTINATION usr/libexec/seekdb/lib COMPONENT server)
 endif()
 
 seekdb_apply_unity_inventory(oblib_lib_simd SEEKDB_OBLIB_SIMD_UNITY)
