@@ -255,7 +255,9 @@ int ObVectorIndexUtil::parser_params_from_string(
         } else if (new_param_name == "LIB") {
           if (new_param_value == "VSAG") {
             param.lib_ = ObVectorIndexAlgorithmLib::VIAL_VSAG;
-          } else if (new_param_value == "HIPVS") {
+          } else if (new_param_value == "HIPVS" || new_param_value == "CUVS") {
+            // hipVS preserves the cuVS library/API names used by the AMD demo.
+            // Both spellings select the AMD construction backend, never CUDA.
             param.lib_ = ObVectorIndexAlgorithmLib::VIAL_HIPVS;
           } else if (new_param_value == "OB") {
             param.lib_ = ObVectorIndexAlgorithmLib::VIAL_OB;
@@ -2995,9 +2997,12 @@ int ObVectorIndexUtil::check_index_param(
           }
         } else if (last_variable == "LIB") {
           if (new_parser_name == "VSAG" || new_parser_name == "HIPVS" ||
+              new_parser_name == "CUVS" ||
               new_parser_name == "OB") {
             lib_is_set = true;
-            lib_name = new_parser_name;
+            // Apply the exact same metric/type/build-feature checks to the
+            // course's LIB=CUVS spelling and the explicit LIB=HIPVS spelling.
+            lib_name = new_parser_name == "CUVS" ? ObString("HIPVS") : new_parser_name;
           } else {
             ret = OB_NOT_SUPPORTED;
             LOG_USER_ERROR(OB_NOT_SUPPORTED, "this type of vector index lib is");

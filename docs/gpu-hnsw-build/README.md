@@ -1,9 +1,18 @@
 # GPU construction of native HNSW indexes
 
+Latest submission: [Chinese instructions and 2026-10-30 reproduction](SUBMISSION.md).
+The current `LIB=CUVS` build measured **8.0777×** construction speedup; its
+separate raw results are in [radeon-20261030-cuvs](results/radeon-20261030-cuvs).
+
 `LIB=HIPVS` uses AMD hipVS to construct a CAGRA base graph on the GPU, converts
 it into a full mutable HNSW graph with a CPU hierarchy, and imports that graph
 into VSAG. The resulting index uses seekdb's normal query, filter, delta-update,
 and snapshot persistence paths. `LIB=VSAG` retains CPU construction.
+
+The course spelling `LIB=CUVS` is also accepted as an alias of this AMD
+construction backend. See [video alignment and validation status](VIDEO_ALIGNMENT.md)
+and [Radeon Cloud setup](RADEON_CLOUD_SETUP.md). This is not a CUDA backend or
+the course's separate batch-query procedure.
 
 ## Build and run
 
@@ -23,7 +32,7 @@ make -C build_release -j8 seekdb
 export LD_LIBRARY_PATH="/opt/hipvs/lib:/opt/rocm/lib:${LD_LIBRARY_PATH:-}"
 python3 .github/script/seekdb/sdb.py start \
   --binary "$PWD/build_release/src/observer/seekdb" \
-  --base-dir /workspace/hipvs-test --port 2881 \
+  --base-dir /var/tmp/hipvs-test --port 2881 \
   --parameter cpu_count=16
 ```
 
@@ -31,6 +40,11 @@ Deploy `seekdb_hipvs_hnsw_worker` beside the seekdb executable and
 `libseekdb_hipvs_hnsw.so` in its library directory. CMake builds the worker
 when building `seekdb` and installs both supporting artifacts. Keep the normal
 CPU deployment by configuring without `-DOB_BUILD_HIPVS=ON`.
+
+Use a local filesystem for the live database. The tested cloud's persistent
+`/workspace` is NFS and rejects seekdb's `fallocate`; retain source, binaries,
+and evidence there, but run the database on local storage. See the recorded
+[failed startup log](results/radeon-20261030-cuvs/failed-nfs-startup.log).
 
 ```sql
 CREATE TABLE documents(id BIGINT PRIMARY KEY, embedding VECTOR(128));
@@ -90,7 +104,7 @@ OPENBLAS_NUM_THREADS=8 OMP_NUM_THREADS=8 python3 \
   --rows 50000 --dim 128 --queries 100 --rounds 3 \
   --m 32 --ef-construction 200 --ef-search 1000 --min-recall 0.99 \
   --database hipvs_build_benchmark \
-  --server-log /workspace/hipvs-test/log/seekdb.log \
+  --server-log /var/tmp/hipvs-test/log/seekdb.log \
   --output /workspace/hipvs-results.json
 ```
 
@@ -109,6 +123,11 @@ speedup, server settings, query plans, dataset SHA256, and actual GPU-path logs.
 The local 99% quality floor is a reproducibility choice; the competition's
 official quality and speedup thresholds have not been supplied here.
 
+After compiling the current source, use `--gpu-lib cuvs` to exercise the
+course's SQL spelling, or `--gpu-lib hipvs` for the original spelling. The
+chosen spelling is recorded in the benchmark configuration. Use a new output
+path for new measurements; the archived results predate this alias change.
+
 The baseline caps effective `ef_search` at `max(1000, 10*topk)`; increasing the
 session value beyond 1000 does not improve top-10 search. M=16 measured 97.5%
 CPU recall on this dataset, so the reported comparison uses M=32 for both
@@ -125,6 +144,60 @@ The mysqltest case
 `vector_index/t/vector_index_hipvs_validation.test` covers unsupported GPU
 declarations, the CPU route, and twelve fresh build/query/drop cycles. It runs
 without GPU resources and in builds where the optional feature is disabled.
+
+On an enabled build, this checker also exercises both GPU spellings and mixed
+case, including the explicit tiny CPU path:
+
+```bash
+python3 unittest/sql/vector_index/check_hipvs_sql.py \
+  --database hipvs_contract_check --output /workspace/hipvs-sql-contract.json
+```
+
+It passed 27 actual SQL checks in the new cloud run. It uses the `mysql` CLI;
+it does not claim to be an execution of the mysqltest runner.
+
+## CPU-only regression and archived-evidence checks
+
+The benchmark now rejects filtered results that contain invalid IDs or fall
+below `--min-recall`, checks that the reinserted vector is searchable, and
+sets `completed=false` on failure. Restart verification records a separate
+`running`/`passed`/`failed` state and retains `build_completed` so a failed
+restart can be retried without reusing a stale successful verification.
+Reports are read and written explicitly as UTF-8, including on Windows.
+
+Run the focused checks without NumPy, SQL, ROCm, or an AMD GPU:
+
+```bash
+python3 -m unittest discover -s unittest/sql/vector_index -p 'test_hipvs_*.py' -v
+python3 docs/gpu-hnsw-build/verify_evidence.py \
+  --source-ref c393a801db3b3ad1640b5445ed292799101d3e11
+```
+
+The second command recomputes medians and speedup from the six archived runs,
+validates per-query recall and filter/restart results, checks the measured
+source hashes against the specified commit, and counts the raw GPU kernel
+dispatch records. It performs **consistency checks only**, not a fresh SQL
+build or GPU execution. A failure exits nonzero. Tests also reject changed
+speedups, missing rounds, wrong-dataset GPU events, nonfinite recall, and
+stale restart success.
+
+The historical measured source is the original commit above. The subsequent
+benchmark fixes and CUVS alias were separately built and executed on Radeon
+Cloud; use the new campaign below to verify the current source.
+Do not edit the historical source manifest to make it match later edits.
+Omitting `--source-ref` checks the current working tree instead (normalizing
+Windows CRLF); it will correctly report that the benchmark has changed since
+the archived measurements. New GPU runs should use a new output path and
+record their own source manifest and environment.
+
+```bash
+python3 docs/gpu-hnsw-build/verify_evidence.py \
+  --results-dir docs/gpu-hnsw-build/results/radeon-20261030-cuvs
+```
+
+This verifies 16 current measured source files, six new timed runs, quality,
+persistence results, and the new kernel trace. It remains an offline evidence
+check, not a fresh GPU benchmark execution.
 
 ## Attribution
 

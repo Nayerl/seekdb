@@ -1,5 +1,12 @@
 # AMD hipVS HNSW construction measurements
 
+The original 8.208× campaign below is historical. A new full build with the
+course's `LIB=CUVS` alias measured **8.0776661036×**, with CPU/GPU medians
+25.114934700 / 3.109182080 seconds and Recall@10 0.996 / 1.000. All DML,
+filter, hidden-GPU restart, and 27 SQL contract checks passed. See the
+[current submission](SUBMISSION.md) and
+[new raw campaign](results/radeon-20261030-cuvs/sql-50000x128.json).
+
 Measured on 2026-10-30 (Asia/Shanghai) against the frozen competition source
 `5bce9e06d1281347ad61344e4b01fab9158c58a2` plus the implementation in this PR.
 The exact tested source files are hashed in
@@ -151,3 +158,37 @@ are not mixed into the final medians.
 Reproduction commands, deployment details, and attribution are in
 [README.md](README.md). The competition's exact target multiple, dataset, and
 quality threshold must be applied separately when available.
+
+## Follow-up validation changes (2026-10-30)
+
+After cloning the existing `competition/amd-hipvs-build` branch at
+`c393a801db3b3ad1640b5445ed292799101d3e11`, an additional Windows-side check
+recomputed the recorded medians and 8.2079571971 speedup, matched all 14
+measured source hashes against that commit, and counted the 158 kernel
+dispatches and 61 NN-descent dispatches. This checks consistency of the
+archived evidence; it is not an independent GPU reproduction or proof of
+the original environment's provenance.
+
+The benchmark was then corrected so filter recall and IDs actually gate
+success, reinsertion is checked by a query, and failed restart verification
+cannot retain an earlier successful status. Fourteen CPU-only regression
+tests passed. The production hipVS bridge/builder and the historical raw
+measurements were not changed. These newer benchmark checks were subsequently
+executed in the separate Radeon Cloud campaign linked above. The original
+performance table above describes the original measured commit only.
+
+The supplied course link,
+[AMD 赛题方向解析](https://open.oceanbase.com/course/detail/16684), was checked
+as an anonymous visitor. The page requires login to watch the video and
+did not expose a transcript; no additional thresholds have been inferred
+from unseen video content.
+
+The user subsequently supplied the 22.5-minute local recording. Its key
+slides and complete machine transcript were checked together; see
+[video alignment](VIDEO_ALIGNMENT.md). The follow-up SQL parser accepts the
+course's `LIB=CUVS` spelling as an alias of the AMD `LIB=HIPVS` construction
+backend, with identical capability checks. The benchmark can select it using
+`--gpu-lib cuvs`, and mysqltest rejection cases were added. These C++/SQL
+changes have now passed a full build and execution on the Radeon environment.
+The course's 12x batch-query demonstration is not a construction result and
+does not replace the independent construction measurements above.

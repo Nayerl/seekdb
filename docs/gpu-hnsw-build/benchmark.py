@@ -15,7 +15,37 @@ import statistics
 import subprocess
 import time
 
-import numpy as np
+def validate_filter_result(got, expected, valid_ids, min_recall):
+    """Fail the campaign when filtering returns bad IDs or loses recall."""
+    if not expected or len(got) != len(expected) or len(set(got)) != len(got):
+        raise RuntimeError("filtered query returned missing or duplicate IDs")
+    got = set(got)
+    if not got <= valid_ids or any(v % 3 != 0 for v in got):
+        raise RuntimeError("filtered query returned an invalid or unfiltered ID")
+    recall = len(got & expected) / len(expected)
+    if recall < min_recall:
+        raise RuntimeError(f"filtered Recall@10 {recall} is below the local floor {min_recall}")
+    return recall
+
+
+def begin_restart_verification(report, digest):
+    if report["configuration"]["data_sha256"] != digest:
+        raise RuntimeError("restart verification uses a different dataset")
+    if not report.get("build_completed", report.get("completed", False)):
+        raise RuntimeError("restart verification requires a successful build campaign")
+    # Retain the historical construction result separately, so a failed
+    # restart can be retried without presenting the latest attempt as passed.
+    report["build_completed"] = True
+    report["completed"] = False
+    report.pop("error", None)
+    report["restart_verification"] = {"status": "running"}
+
+
+def record_failure(report, error, restart=False):
+    report["completed"] = False
+    report["error"] = str(error)
+    if restart:
+        report["restart_verification"] = {"status": "failed", "error": str(error)}
 
 
 def main():
@@ -30,6 +60,8 @@ def main():
     p.add_argument("--queries", type=int, default=100)
     p.add_argument("--rounds", type=int, default=3)
     p.add_argument("--m", type=int, choices=(16, 32, 64), default=32)
+    p.add_argument("--gpu-lib", choices=("hipvs", "cuvs"), default="hipvs",
+                   help="AMD construction spelling; cuvs matches the course SQL alias")
     p.add_argument("--ef-construction", type=int, default=200)
     p.add_argument("--ef-search", type=int, default=1000)
     p.add_argument("--min-recall", type=float, default=0.99,
@@ -44,6 +76,7 @@ def main():
         p.error("at least three rounds and enough rows/dimensions/queries are required")
     if not 0 <= a.min_recall <= 1 or a.ef_construction <= a.m or a.ef_search < 10:
         p.error("invalid quality or HNSW parameters")
+    import numpy as np
     a.output.parent.mkdir(parents=True, exist_ok=True)
     client = [a.client, "--protocol=TCP", f"--host={a.host}", f"--port={a.port}",
               f"--user={a.user}", "--batch", "--raw", "--skip-column-names",
@@ -70,15 +103,15 @@ def main():
     config = {k: v for k, v in vars(a).items() if k not in ("output", "server_log")}
     config.update(seed=20261030, dtype="float32", distance="l2", data_sha256=digest)
     report = {"configuration": config, "runs": [], "official_target_known": False,
+              "completed": False, "build_completed": False,
               "timing": "CREATE VECTOR INDEX through completion of the same first availability query"}
     if a.verify_existing:
-        report = json.loads(a.output.read_text())
-        if report["configuration"]["data_sha256"] != digest:
-            raise RuntimeError("restart verification uses a different dataset")
+        report = json.loads(a.output.read_text(encoding="utf-8"))
+        begin_restart_verification(report, digest)
 
     def save():
         tmp = a.output.with_suffix(".tmp")
-        tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+        tmp.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         tmp.replace(a.output)
 
     def neighbors(q, approximate=True, where="", limit=10):
@@ -120,9 +153,11 @@ def main():
 
     try:
         if a.verify_existing:
+            save()
             if int(sql("SELECT count(*) FROM corpus")[0][0]) != a.rows:
                 raise RuntimeError("restart lost rows")
-            report["restart_verification"] = quality()
+            report["restart_verification"] = {"status": "passed", **quality()}
+            report["completed"] = True
             save()
             print(json.dumps(report["restart_verification"]), flush=True)
             return
@@ -155,8 +190,9 @@ def main():
                 with a.server_log.open("rb") as log:
                     log.seek(0, os.SEEK_END)
                     start = time.perf_counter()
+                    lib = a.gpu_lib if backend == "hipvs" else backend
                     sql(f"CREATE VECTOR INDEX idx ON corpus(vec) WITH (distance=l2,type=hnsw,"
-                        f"lib={backend},m={a.m},ef_construction={a.ef_construction},ef_search={a.ef_search})")
+                        f"lib={lib},m={a.m},ef_construction={a.ef_construction},ef_search={a.ef_search})")
                     run["ddl_seconds"] = time.perf_counter() - start
                     first = neighbors(queries[0])
                     elapsed = time.perf_counter() - start
@@ -186,7 +222,7 @@ def main():
         report["medians_seconds"] = medians
         report["speedup"] = medians["vsag"] / medians["hipvs"]
         # Leave a newly built GPU-produced native index for restart and DML checks.
-        sql(f"CREATE VECTOR INDEX idx ON corpus(vec) WITH (distance=l2,type=hnsw,lib=hipvs,"
+        sql(f"CREATE VECTOR INDEX idx ON corpus(vec) WITH (distance=l2,type=hnsw,lib={a.gpu_lib},"
             f"m={a.m},ef_construction={a.ef_construction},ef_search={a.ef_search})")
         target = int(ids[0])
         zero = np.zeros(a.dim, dtype=np.float32)
@@ -197,19 +233,23 @@ def main():
         if target in neighbors(zero):
             raise RuntimeError("deleted snapshot ID leaked into results")
         sql(f"INSERT INTO corpus VALUES ({target},{vec(x[0])})")
+        if neighbors(x[0], limit=1) != [target]:
+            raise RuntimeError("post-build reinsertion query failed")
         mask = ids % 3 == 0
         filtered_dist = np.einsum("ij,ij->i", x64[mask] - queries[0], x64[mask] - queries[0])
         expected = set(int(v) for v in ids[mask][np.argsort(filtered_dist)[:10]])
-        got = set(neighbors(queries[0], where="WHERE id % 3 = 0"))
+        got = neighbors(queries[0], where="WHERE id % 3 = 0")
+        filter_recall = validate_filter_result(got, expected, valid_ids, a.min_recall)
         report["dml_and_filter"] = {"update": True, "delete": True, "reinsert": True,
-                                    "filter_recall_at_10": len(got & expected) / 10,
-                                    "all_filter_ids_valid": all(v % 3 == 0 for v in got)}
+                                    "filter_recall_at_10": filter_recall,
+                                    "all_filter_ids_valid": True}
+        report["build_completed"] = True
         report["completed"] = True
         save()
         print(json.dumps({"medians_seconds": medians, "speedup": report["speedup"],
                           "dml_and_filter": report["dml_and_filter"]}), flush=True)
     except Exception as exc:
-        report["error"] = str(exc)
+        record_failure(report, exc, restart=a.verify_existing)
         save()
         raise
 

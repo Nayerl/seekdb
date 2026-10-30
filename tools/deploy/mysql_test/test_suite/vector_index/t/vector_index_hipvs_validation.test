@@ -13,6 +13,14 @@ CREATE VECTOR INDEX bad ON hipvs_contract(vec) WITH (distance=l2,type=hnsw_bq,li
 CREATE VECTOR INDEX bad ON hipvs_contract(vec) WITH (distance=l2,type=hnsw,lib=hipvs,m=20);
 --error 1235
 CREATE VECTOR INDEX bad ON hipvs_contract(vec) WITH (distance=l2,type=ivf_flat,lib=hipvs);
+# The lecture's cuVS name is an alias for the same AMD backend. These errors
+# must come from the HIPVS capability checks, not unknown-library rejection.
+--error 1235
+CREATE VECTOR INDEX bad ON hipvs_contract(vec) WITH (distance=cosine,type=hnsw,lib=cuvs,m=16);
+--error 1235
+CREATE VECTOR INDEX bad ON hipvs_contract(vec) WITH (distance=l2,type=hnsw_sq,lib=cuvs,m=16);
+--error 1235
+CREATE VECTOR INDEX bad ON hipvs_contract(vec) WITH (distance=l2,type=hnsw,lib=cuvs,m=20);
 INSERT INTO hipvs_contract VALUES (11,'[1,0,0]'),(29,'[2,0,0]');
 CREATE VECTOR INDEX cpu_idx ON hipvs_contract(vec) WITH (distance=l2,type=hnsw,lib=vsag,m=16);
 SELECT id FROM hipvs_contract ORDER BY l2_distance(vec,'[1,0,0]') APPROXIMATE LIMIT 1;
